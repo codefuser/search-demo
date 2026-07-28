@@ -17,3 +17,20 @@ build/
 .idea/
 *.log
 .env
+
+# Reports directory (ignored for GitHub)
+report/
+reports/
+
+# Uploaded videos, extracted frame images & embeddings (ignored for GitHub)
+backend/uploads/*
+!backend/uploads/.gitkeep
+uploads/*
+!uploads/.gitkeep
+*.jpg
+*.jpeg
+*.png
+*.npy
+*.mp4
+*.mov
+*.avi

@@ -1,53 +1,57 @@
 import os
 import json
 import glob
+import time
 import torch
 import numpy as np
 from PIL import Image
-import open_clip
+from transformers import CLIPProcessor, CLIPModel
 
 class CLIPSearchService:
-    def __init__(self, model_name: str = 'ViT-B-32', pretrained: str = 'laion2b_s34b_b79k'):
+    def __init__(self, model_name: str = "openai/clip-vit-base-patch32"):
         self.model_name = model_name
-        self.pretrained = pretrained
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = None
-        self.preprocess = None
-        self.tokenizer = None
+        self.processor = None
         self._is_loaded = False
         
-        # In-memory RAM cache for loaded embeddings and metadata
+        # RAM cache for video embeddings
         # Schema: { video_id: { "embeddings": np.ndarray, "metadata": list } }
         self._embeddings_cache = {}
 
     def load_model(self):
-        """Lazy load OpenCLIP model and tokenizer once into memory."""
-        if not self._is_loaded:
-            print(f"[OpenCLIP] Loading model '{self.model_name}' ({self.pretrained}) on device '{self.device}'...")
-            self.model, _, self.preprocess = open_clip.create_model_and_transforms(
-                self.model_name,
-                pretrained=self.pretrained,
-                device=self.device
-            )
-            self.tokenizer = open_clip.get_tokenizer(self.model_name)
-            self.model.eval()
-            self._is_loaded = True
-            print("[OpenCLIP] Model successfully loaded into memory.")
+        """
+        Loads CLIP model and processor ONCE at server startup.
+        Subsequent calls return immediately without reloading.
+        """
+        if self._is_loaded:
+            print(f"[STAGE 1 - Model Load] Model '{self.model_name}' is already loaded in memory (0.00s).")
+            return
+
+        t0 = time.perf_counter()
+        print(f"[STAGE 1 - Model Load] Starting CLIP model loading ('{self.model_name}' on {self.device})...")
+        
+        self.model = CLIPModel.from_pretrained(self.model_name).to(self.device)
+        self.processor = CLIPProcessor.from_pretrained(self.model_name)
+        self.model.eval()
+        self._is_loaded = True
+        
+        elapsed = time.perf_counter() - t0
+        print(f"[STAGE 1 - Model Load] COMPLETED in {elapsed:.3f}s")
 
     def get_or_load_cache(self, upload_base_dir: str, video_id: str):
-        """
-        Loads embeddings and metadata into in-memory cache ONLY ONCE per video_id.
-        Subsequent calls retrieve vectors directly from RAM.
-        """
+        """Loads embeddings into RAM cache if not already present."""
         if video_id in self._embeddings_cache:
             return self._embeddings_cache[video_id]
 
+        t0 = time.perf_counter()
         video_dir = os.path.join(upload_base_dir, video_id)
         embeddings_path = os.path.join(video_dir, "embeddings.npy")
         metadata_path = os.path.join(video_dir, "metadata.json")
 
         if os.path.exists(embeddings_path) and os.path.exists(metadata_path):
             try:
+                print(f"[STAGE 5 - Loading Embeddings] Reading embeddings from disk for video_id '{video_id}'...")
                 embeddings_np = np.load(embeddings_path)
                 with open(metadata_path, "r", encoding="utf-8") as f:
                     metadata = json.load(f)
@@ -57,45 +61,47 @@ class CLIPSearchService:
                     "metadata": metadata
                 }
                 self._embeddings_cache[video_id] = cache_entry
-                print(f"[RAM Cache] Loaded {len(embeddings_np)} embeddings into RAM for video_id '{video_id}'.")
+                elapsed = time.perf_counter() - t0
+                print(f"[STAGE 5 - Loading Embeddings] Loaded {len(embeddings_np)} vectors into RAM in {elapsed:.3f}s.")
                 return cache_entry
             except Exception as e:
-                print(f"[RAM Cache Error] Failed to load cache for {video_id}: {e}")
+                print(f"[STAGE 5 - Loading Embeddings ERROR] Failed to load cache for {video_id}: {e}")
                 return None
 
         return None
 
     def extract_and_save_embeddings(self, video_dir: str, frames_dir: str, timestamps: list):
         """
-        Generates vector embeddings for every frame in frames_dir using OpenCLIP.
-        OPTIMIZATION: Does NOT regenerate embeddings if embeddings.npy already exists.
-        Caches embeddings directly into RAM memory.
+        Generates vector embeddings for every frame in frames_dir using CLIP.
+        Skips regeneration if embeddings.npy already exists.
         """
         video_id = os.path.basename(video_dir)
         embeddings_path = os.path.join(video_dir, "embeddings.npy")
         metadata_path = os.path.join(video_dir, "metadata.json")
 
-        # Optimization: Do not regenerate embeddings if they already exist on disk
+        # Optimization: Reuse existing embeddings
         if os.path.exists(embeddings_path) and os.path.exists(metadata_path):
-            print(f"[OpenCLIP Cache] Existing embeddings found for '{video_id}'. Skipping generation.")
+            print(f"[STAGE 3 & 4] Existing embeddings found on disk for '{video_id}'. Skipping generation.")
             cached = self.get_or_load_cache(os.path.dirname(video_dir), video_id)
             if cached:
-                return len(cached["embeddings"]), True  # (count, is_from_cache=True)
+                return len(cached["embeddings"]), True
 
         self.load_model()
+
+        t0_gen = time.perf_counter()
+        print(f"[STAGE 3 - Generating Frame Embeddings] Processing frames from '{frames_dir}'...")
 
         frame_files = sorted(glob.glob(os.path.join(frames_dir, "frame_*.jpg")))
         if not frame_files:
             raise ValueError("No frame images found for embedding generation")
 
-        image_tensors = []
+        images = []
         metadata = []
 
         for idx, frame_path in enumerate(frame_files):
             try:
                 img = Image.open(frame_path).convert('RGB')
-                processed_img = self.preprocess(img)
-                image_tensors.append(processed_img)
+                images.append(img)
 
                 filename = os.path.basename(frame_path)
                 timestamp_val = timestamps[idx] if idx < len(timestamps) else float(idx)
@@ -106,55 +112,76 @@ class CLIPSearchService:
                     "timestamp": timestamp_val
                 })
             except Exception as e:
-                print(f"[OpenCLIP Warning] Failed to process frame {frame_path}: {e}")
+                print(f"[CLIP Warning] Failed to process frame {frame_path}: {e}")
 
-        if not image_tensors:
-            raise ValueError("Failed to preprocess frame images")
+        if not images:
+            raise ValueError("Failed to process frame images")
 
-        batch_tensor = torch.stack(image_tensors).to(self.device)
+        inputs = self.processor(images=images, return_tensors="pt", padding=True).to(self.device)
 
         with torch.no_grad():
-            image_features = self.model.encode_image(batch_tensor)
-            # L2 Normalize frame embeddings
+            image_features = self.model.get_image_features(**inputs)
+            if hasattr(image_features, "pooler_output") and image_features.pooler_output is not None:
+                image_features = image_features.pooler_output
+            elif hasattr(image_features, "image_embeds") and image_features.image_embeds is not None:
+                image_features = image_features.image_embeds
             image_features /= image_features.norm(dim=-1, keepdim=True)
 
         embeddings_np = image_features.cpu().numpy()
+        gen_elapsed = time.perf_counter() - t0_gen
+        print(f"[STAGE 3 - Generating Frame Embeddings] Generated {len(embeddings_np)} embeddings in {gen_elapsed:.3f}s.")
 
-        # Save to disk
+        # Stage 4: Save embeddings to disk
+        t0_save = time.perf_counter()
         np.save(embeddings_path, embeddings_np)
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
+        save_elapsed = time.perf_counter() - t0_save
+        print(f"[STAGE 4 - Saving Embeddings] Saved to disk ({embeddings_path}) in {save_elapsed:.3f}s.")
 
-        # Store in RAM cache
         self._embeddings_cache[video_id] = {
             "embeddings": embeddings_np,
             "metadata": metadata
         }
 
-        print(f"[OpenCLIP] Generated and cached {len(embeddings_np)} embeddings -> {embeddings_path}")
-        return len(embeddings_np), False  # (count, is_from_cache=False)
+        return len(embeddings_np), False
 
-    def search(self, upload_base_dir: str, query_text: str, video_id: str = None, top_k: int = 10):
+    def search(self, upload_base_dir: str, query_text: str, video_id: str = None, top_k: int = 20):
         """
-        Fast in-memory semantic search:
-        - Encodes query text into embedding vector
-        - Uses cached in-memory numpy matrix multiplication (np.dot)
-        - Zero disk re-reading during search
+        Fast non-blocking semantic search pipeline:
+        1. Load model if not loaded (0.00s if pre-loaded at startup)
+        2. Generate text embedding for user query ONLY
+        3. Load cached frame embeddings from RAM
+        4. Compute vector dot product similarity
+        5. Return ranked top_k results
         """
+        t_start_total = time.perf_counter()
+        print(f"\n--- [SEARCH START] Query: '{query_text}' | Video ID: '{video_id or 'ALL'}' ---")
+
+        # Stage 1: Verify model loaded
         self.load_model()
 
         if not query_text or not query_text.strip():
             return []
 
-        # Generate text embedding
-        text_tokens = self.tokenizer([query_text.strip()]).to(self.device)
+        # Stage 6a: Generate text embedding vector
+        t0_text = time.perf_counter()
+        print(f"[STAGE 6 - Text Embedding] Encoding text query '{query_text}'...")
+        inputs = self.processor(text=[query_text.strip()], return_tensors="pt", padding=True).to(self.device)
         with torch.no_grad():
-            text_features = self.model.encode_text(text_tokens)
+            text_features = self.model.get_text_features(**inputs)
+            if hasattr(text_features, "pooler_output") and text_features.pooler_output is not None:
+                text_features = text_features.pooler_output
+            elif hasattr(text_features, "text_embeds") and text_features.text_embeds is not None:
+                text_features = text_features.text_embeds
             text_features /= text_features.norm(dim=-1, keepdim=True)
 
         text_embed_np = text_features.cpu().numpy().squeeze(0)
+        text_elapsed = time.perf_counter() - t0_text
+        print(f"[STAGE 6 - Text Embedding] Encoded text vector in {text_elapsed:.4f}s.")
 
-        # Retrieve video IDs
+        # Stage 5: Retrieve cached frame embeddings
+        t0_cache = time.perf_counter()
         target_video_ids = []
         if video_id:
             target_video_ids = [video_id]
@@ -166,7 +193,8 @@ class CLIPSearchService:
 
         all_results = []
 
-        # Vector comparison against cached RAM embeddings
+        # Stage 6b: Compute matrix multiplication / similarity dot product
+        t0_sim = time.perf_counter()
         for vid in target_video_ids:
             cached_data = self.get_or_load_cache(upload_base_dir, vid)
             if not cached_data:
@@ -175,7 +203,7 @@ class CLIPSearchService:
             embeddings = cached_data["embeddings"]
             metadata = cached_data["metadata"]
 
-            # Matrix multiplication / dot product in memory
+            # Pure in-memory vector comparison
             similarities = np.dot(embeddings, text_embed_np)
 
             for idx, sim in enumerate(similarities):
@@ -198,10 +226,20 @@ class CLIPSearchService:
                     "video_id": vid
                 })
 
-        # Sort descending by similarity score (highest match first)
-        all_results.sort(key=lambda x: x["similarity_score"], reverse=True)
+        sim_elapsed = time.perf_counter() - t0_sim
+        print(f"[STAGE 6 - Computing Similarities] Calculated dot product across {len(all_results)} frames in {sim_elapsed:.4f}s.")
 
-        return all_results[:top_k]
+        # Stage 7: Sort and return top_k results
+        t0_sort = time.perf_counter()
+        all_results.sort(key=lambda x: x["similarity_score"], reverse=True)
+        top_results = all_results[:top_k]
+        sort_elapsed = time.perf_counter() - t0_sort
+
+        total_elapsed = time.perf_counter() - t_start_total
+        print(f"[STAGE 7 - Returning Results] Prepared Top {len(top_results)} matches in {sort_elapsed:.4f}s.")
+        print(f"--- [SEARCH COMPLETE] Total search pipeline execution time: {total_elapsed:.4f}s ---\n")
+
+        return top_results
 
     @staticmethod
     def _format_timestamp(seconds: float) -> str:
@@ -213,5 +251,4 @@ class CLIPSearchService:
             return f"{hrs:02d}:{mins:02d}:{secs:02d}"
         return f"{mins:02d}:{secs:02d}"
 
-# Singleton service instance
 clip_service = CLIPSearchService()

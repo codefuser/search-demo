@@ -6,3 +6,14 @@ env/
 venv/
 .pytest_cache/
 .env
+
+# Uploaded videos, extracted frame images & embeddings (ignored for GitHub)
+uploads/*
+!uploads/.gitkeep
+*.jpg
+*.jpeg
+*.png
+*.npy
+*.mp4
+*.mov
+*.avi

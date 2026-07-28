@@ -3,6 +3,9 @@ import shutil
 import glob
 import hashlib
 import json
+import time
+import asyncio
+from contextlib import asynccontextmanager
 import cv2
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,10 +14,30 @@ from pydantic import BaseModel
 
 from clip_service import clip_service
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    FastAPI Lifespan context manager:
+    Pre-loads the CLIP model into memory ONCE during server startup.
+    This guarantees that model loading NEVER blocks or hangs user search requests!
+    """
+    print("=================================================================")
+    print("[SERVER STARTUP] Pre-loading CLIP model into memory...")
+    t0 = time.perf_counter()
+    clip_service.load_model()
+    elapsed = time.perf_counter() - t0
+    print(f"[SERVER STARTUP] CLIP model successfully loaded in {elapsed:.3f}s!")
+    print("=================================================================\n")
+    yield
+    print("[SERVER SHUTDOWN] Shutting down backend server...")
+
+
 app = FastAPI(
     title="Semantic Video Search API",
-    description="High-performance cached OpenCLIP local semantic video search API",
-    version="0.5.0"
+    description="High-performance cached CLIP local semantic video search API",
+    version="0.6.0",
+    lifespan=lifespan
 )
 
 # Enable CORS for frontend client interactions
@@ -43,7 +66,7 @@ ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi"}
 class SearchRequest(BaseModel):
     query: str
     video_id: str | None = None
-    top_k: int = 20  # Default to Top 20 matches
+    top_k: int = 20
 
 
 def extract_frames_every_second(video_path: str, frames_dir: str):
@@ -51,10 +74,11 @@ def extract_frames_every_second(video_path: str, frames_dir: str):
     Extracts 1 frame every second from the video using OpenCV.
     OPTIMIZATION: Skips extraction if frames already exist in frames_dir.
     """
+    t0_ext = time.perf_counter()
     existing_frames = sorted(glob.glob(os.path.join(frames_dir, "frame_*.jpg")))
     
     if len(existing_frames) > 0:
-        print(f"[OpenCV Cache] Found {len(existing_frames)} existing frames in '{frames_dir}'. Skipping frame extraction.")
+        print(f"[STAGE 2 - Frame Extraction] Found {len(existing_frames)} existing frames. Skipping extraction (0.00s).")
         
         metadata_path = os.path.join(os.path.dirname(frames_dir), "metadata.json")
         timestamps = []
@@ -68,6 +92,7 @@ def extract_frames_every_second(video_path: str, frames_dir: str):
 
         return len(existing_frames), 30.0, timestamps, True
 
+    print(f"[STAGE 2 - Frame Extraction] Starting OpenCV extraction from '{video_path}'...")
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError("Unable to open video file with OpenCV")
@@ -99,6 +124,8 @@ def extract_frames_every_second(video_path: str, frames_dir: str):
         frame_count += 1
 
     cap.release()
+    ext_elapsed = time.perf_counter() - t0_ext
+    print(f"[STAGE 2 - Frame Extraction] Extracted {len(timestamps)} frames @ {round(fps,2)} FPS in {ext_elapsed:.3f}s.")
 
     return len(timestamps), round(fps, 2), timestamps, False
 
@@ -106,8 +133,8 @@ def extract_frames_every_second(video_path: str, frames_dir: str):
 @app.get("/")
 def read_root():
     return {
-        "message": "OpenCLIP Semantic Video Search API is online (Top 20 Matches)",
-        "version": "0.5.0",
+        "message": "CLIP Semantic Video Search API (Pre-loaded Lifespan Edition)",
+        "version": "0.6.0",
         "status": "ready",
         "health_endpoint": "/health"
     }
@@ -118,14 +145,21 @@ def health_check():
     return {
         "status": "ok",
         "service": "semantic-video-search-backend",
-        "clip_model": "OpenCLIP ViT-B-32",
+        "clip_model": "CLIP ViT-B-32",
+        "model_preloaded": clip_service._is_loaded,
         "ram_cached_videos_count": len(clip_service._embeddings_cache),
-        "version": "0.5.0"
+        "version": "0.6.0"
     }
 
 
 @app.post("/upload")
 async def upload_video(file: UploadFile = File(...)):
+    """
+    1. Validates file
+    2. Hashes video signature for instant cache lookup
+    3. Runs frame extraction & embedding generation in worker threadpool (non-blocking)
+    """
+    t_upload_start = time.perf_counter()
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
 
@@ -157,17 +191,23 @@ async def upload_video(file: UploadFile = File(...)):
 
         file_size = os.path.getsize(video_path)
 
-        # Step 1: Extract 1 frame per second
-        total_frames, fps, timestamps, is_frames_cached = extract_frames_every_second(video_path, frames_dir)
+        # Run CPU work in worker threadpool using asyncio.to_thread
+        total_frames, fps, timestamps, is_frames_cached = await asyncio.to_thread(
+            extract_frames_every_second, video_path, frames_dir
+        )
 
-        # Step 2: Generate & cache OpenCLIP embeddings
-        total_embeddings, is_embeddings_cached = clip_service.extract_and_save_embeddings(video_dir, frames_dir, timestamps)
+        total_embeddings, is_embeddings_cached = await asyncio.to_thread(
+            clip_service.extract_and_save_embeddings, video_dir, frames_dir, timestamps
+        )
 
-        cache_msg = "Retrieved from cache (instant)" if (is_frames_cached and is_embeddings_cached) else "Newly indexed"
+        total_upload_time = time.perf_counter() - t_upload_start
+        cache_tag = "Retrieved from cache (instant)" if (is_frames_cached and is_embeddings_cached) else "Newly indexed"
+
+        print(f"[UPLOAD COMPLETE] Video '{safe_filename}' (ID: {video_id}) processed in {total_upload_time:.3f}s!\n")
 
         return {
             "status": "success",
-            "message": f"Indexing complete! {cache_msg}",
+            "message": f"Indexing complete! {cache_tag}",
             "video_id": video_id,
             "filename": safe_filename,
             "saved_path": f"uploads/{video_id}/{safe_filename}",
@@ -177,6 +217,7 @@ async def upload_video(file: UploadFile = File(...)):
             "total_extracted_frames": total_frames,
             "indexed_embeddings_count": total_embeddings,
             "is_cached": (is_frames_cached and is_embeddings_cached),
+            "processing_time_sec": round(total_upload_time, 3),
             "timestamps": timestamps
         }
 
@@ -187,18 +228,23 @@ async def upload_video(file: UploadFile = File(...)):
 @app.post("/search")
 async def search_video(req: SearchRequest):
     """
-    Search extracted video frames using natural language query.
-    Returns up to Top 20 matching frames sorted by similarity score.
+    Search extracted video frames using natural language text query.
+    Executes search in worker thread with timeout protection (10s timeout).
     """
     if not req.query or not req.query.strip():
         raise HTTPException(status_code=400, detail="Search query cannot be empty")
 
     try:
-        results = clip_service.search(
-            upload_base_dir=UPLOAD_DIR,
-            query_text=req.query,
-            video_id=req.video_id,
-            top_k=req.top_k
+        # Wrap CPU/matrix computation in asyncio.to_thread with 10.0s timeout protection
+        results = await asyncio.wait_for(
+            asyncio.to_thread(
+                clip_service.search,
+                UPLOAD_DIR,
+                req.query,
+                req.video_id,
+                req.top_k
+            ),
+            timeout=10.0
         )
 
         return {
@@ -208,6 +254,9 @@ async def search_video(req: SearchRequest):
             "total_results": len(results),
             "results": results
         }
+    except asyncio.TimeoutError:
+        print(f"[SEARCH TIMEOUT ERROR] Query '{req.query}' timed out after 10.0 seconds!")
+        raise HTTPException(status_code=504, detail="Search request timed out after 10 seconds.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search execution failed: {str(e)}")
 
