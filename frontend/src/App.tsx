@@ -111,6 +111,10 @@ export default function App() {
 
       if (response.ok && data.status === 'success') {
         setSearchResults(data.results || []);
+        if (data.results && data.results.length > 0) {
+          // Default select the top matching result (highest match)
+          setSeekTimestamp(data.results[0].timestamp);
+        }
       } else {
         setSearchResults([]);
         alert(`Search error: ${data.detail || 'Failed to perform semantic search'}`);
@@ -165,13 +169,14 @@ export default function App() {
         <ResultsSection
           results={searchResults}
           activeQuery={activeQuery}
+          selectedTimestamp={seekTimestamp}
           onSelectTimestamp={handleSelectTimestamp}
           isSearching={isSearching}
         />
       </section>
 
       <footer className="footer">
-        Semantic Video Search Application &bull; OpenCLIP Pretrained Local Embeddings
+        Semantic Video Search Application &bull; Minimal Result Cards & Playback Seeking
       </footer>
     </div>
   );

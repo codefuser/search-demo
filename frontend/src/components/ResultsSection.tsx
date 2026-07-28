@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers, SearchX, Clock, Zap, Play } from 'lucide-react';
+import { Layers, SearchX, Clock, Zap, Play, CheckCircle2 } from 'lucide-react';
 
 export interface SearchResult {
   similarity_score: number;
@@ -15,6 +15,7 @@ export interface SearchResult {
 interface ResultsSectionProps {
   results: SearchResult[];
   activeQuery: string;
+  selectedTimestamp: number | null;
   onSelectTimestamp: (timestamp: number) => void;
   isSearching: boolean;
 }
@@ -22,6 +23,7 @@ interface ResultsSectionProps {
 export const ResultsSection: React.FC<ResultsSectionProps> = ({
   results,
   activeQuery,
+  selectedTimestamp,
   onSelectTimestamp,
   isSearching,
 }) => {
@@ -30,11 +32,11 @@ export const ResultsSection: React.FC<ResultsSectionProps> = ({
       <div className="card-header">
         <div className="card-title">
           <Layers size={18} />
-          <span>Semantic Search Results (Sorted by Similarity Score)</span>
+          <span>Search Results</span>
         </div>
         {results.length > 0 && (
           <span style={{ fontSize: '0.8125rem', color: '#94a3b8' }}>
-            Found {results.length} frame matches for &quot;{activeQuery}&quot;
+            {results.length} frame matches for &quot;{activeQuery}&quot; (Highest match first)
           </span>
         )}
       </div>
@@ -48,127 +50,159 @@ export const ResultsSection: React.FC<ResultsSectionProps> = ({
             marginTop: '0.5rem'
           }}
         >
-          {results.map((item, idx) => (
-            <div
-              key={`${item.video_id}-${item.frame_index}-${idx}`}
-              onClick={() => onSelectTimestamp(item.timestamp)}
-              className="result-card"
-              style={{
-                background: '#0e131f',
-                border: '1px solid rgba(255, 255, 255, 0.08)',
-                borderRadius: '12px',
-                overflow: 'hidden',
-                cursor: 'pointer',
-                transition: 'all 0.2s ease',
-                display: 'flex',
-                flexDirection: 'column'
-              }}
-            >
+          {results.map((item, idx) => {
+            const isSelected = selectedTimestamp === item.timestamp;
+
+            return (
               <div
+                key={`${item.video_id}-${item.frame_index}-${idx}`}
+                onClick={() => onSelectTimestamp(item.timestamp)}
+                className={`result-card ${isSelected ? 'active-card' : ''}`}
                 style={{
-                  position: 'relative',
-                  width: '100%',
-                  aspectRatio: '16 / 9',
-                  background: '#000',
-                  overflow: 'hidden'
+                  background: '#0e131f',
+                  border: isSelected ? '2px solid #6366f1' : '1px solid rgba(255, 255, 255, 0.08)',
+                  boxShadow: isSelected ? '0 0 18px rgba(99, 102, 241, 0.45)' : 'none',
+                  borderRadius: '12px',
+                  overflow: 'hidden',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  position: 'relative'
                 }}
               >
-                <img
-                  src={item.frame_image}
-                  alt={`Frame ${item.frame_index}`}
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    objectFit: 'cover'
-                  }}
-                  onError={(e) => {
-                    (e.currentTarget as HTMLImageElement).src =
-                      'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100%" height="100%" fill="%231e293b"/></svg>';
-                  }}
-                />
-                
+                {/* Frame Image */}
                 <div
                   style={{
-                    position: 'absolute',
-                    inset: 0,
-                    background: 'rgba(0,0,0,0.3)',
-                    opacity: 0,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    transition: 'opacity 0.2s ease'
+                    position: 'relative',
+                    width: '100%',
+                    aspectRatio: '16 / 9',
+                    background: '#000',
+                    overflow: 'hidden'
                   }}
-                  className="hover-play-overlay"
                 >
+                  <img
+                    src={item.frame_image}
+                    alt={`Frame at ${item.formatted_timestamp}`}
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover'
+                    }}
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).src =
+                        'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100%" height="100%" fill="%231e293b"/></svg>';
+                    }}
+                  />
+
                   <div
                     style={{
-                      width: '40px',
-                      height: '40px',
-                      borderRadius: '50%',
-                      background: 'rgba(99, 102, 241, 0.9)',
+                      position: 'absolute',
+                      inset: 0,
+                      background: 'rgba(0,0,0,0.3)',
+                      opacity: isSelected ? 0.1 : 0,
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      color: '#fff'
+                      transition: 'opacity 0.2s ease'
                     }}
+                    className="hover-play-overlay"
                   >
-                    <Play size={20} style={{ marginLeft: '2px' }} />
+                    <div
+                      style={{
+                        width: '36px',
+                        height: '36px',
+                        borderRadius: '50%',
+                        background: 'rgba(99, 102, 241, 0.9)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: '#fff'
+                      }}
+                    >
+                      <Play size={18} style={{ marginLeft: '2px' }} />
+                    </div>
                   </div>
-                </div>
 
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: '8px',
-                    right: '8px',
-                    padding: '0.25rem 0.5rem',
-                    borderRadius: '6px',
-                    background: 'rgba(15, 23, 42, 0.85)',
-                    backdropFilter: 'blur(4px)',
-                    border: '1px solid rgba(255,255,255,0.1)',
-                    fontSize: '0.75rem',
-                    fontWeight: 600,
-                    color: '#38bdf8',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.25rem'
-                  }}
-                >
-                  <Clock size={12} />
-                  {item.formatted_timestamp}
-                </div>
-              </div>
-
-              <div style={{ padding: '0.875rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyWait: 'space-between', justifyContent: 'space-between' }}>
-                  <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
-                    Frame #{item.frame_index}
-                  </span>
+                  {/* Timestamp Badge */}
                   <div
                     style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '0.25rem',
-                      padding: '0.2rem 0.5rem',
-                      borderRadius: '9999px',
+                      position: 'absolute',
+                      top: '8px',
+                      right: '8px',
+                      padding: '0.25rem 0.5rem',
+                      borderRadius: '6px',
+                      background: 'rgba(15, 23, 42, 0.85)',
+                      backdropFilter: 'blur(4px)',
+                      border: '1px solid rgba(255,255,255,0.1)',
                       fontSize: '0.75rem',
                       fontWeight: 600,
-                      background: 'rgba(99, 102, 241, 0.15)',
-                      color: '#a5b4fc',
-                      border: '1px solid rgba(99, 102, 241, 0.3)'
+                      color: '#38bdf8',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.25rem'
                     }}
                   >
-                    <Zap size={12} />
-                    Score: {item.similarity_score} ({item.similarity_percent}%)
+                    <Clock size={12} />
+                    {item.formatted_timestamp}
                   </div>
+
+                  {isSelected && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: '8px',
+                        left: '8px',
+                        padding: '0.2rem 0.45rem',
+                        borderRadius: '6px',
+                        background: '#6366f1',
+                        fontSize: '0.7rem',
+                        fontWeight: 600,
+                        color: '#ffffff',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.25rem',
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.4)'
+                      }}
+                    >
+                      <CheckCircle2 size={12} />
+                      Playing
+                    </div>
+                  )}
                 </div>
 
-                <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
-                  Timestamp: {item.timestamp}s &bull; Click to play
+                {/* Card Info */}
+                <div style={{ padding: '0.875rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    {/* Timestamp Details */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8125rem', fontWeight: 500, color: '#f8fafc' }}>
+                      <Clock size={13} style={{ color: '#38bdf8' }} />
+                      <span>{item.formatted_timestamp} ({item.timestamp}s)</span>
+                    </div>
+
+                    {/* Similarity Score */}
+                    <div
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.25rem',
+                        padding: '0.2rem 0.5rem',
+                        borderRadius: '9999px',
+                        fontSize: '0.75rem',
+                        fontWeight: 600,
+                        background: isSelected ? 'rgba(99, 102, 241, 0.25)' : 'rgba(99, 102, 241, 0.12)',
+                        color: isSelected ? '#ffffff' : '#a5b4fc',
+                        border: `1px solid ${isSelected ? '#6366f1' : 'rgba(99, 102, 241, 0.3)'}`
+                      }}
+                    >
+                      <Zap size={12} />
+                      Score: {item.similarity_score}
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <div className="empty-results">
@@ -176,12 +210,12 @@ export const ResultsSection: React.FC<ResultsSectionProps> = ({
             <SearchX size={28} />
           </div>
           <h3 className="empty-results-title">
-            {isSearching ? 'Searching Video Frames...' : activeQuery ? 'No Matching Frames Found' : 'No Search Query Entered'}
+            {isSearching ? 'Searching Video Frames...' : activeQuery ? 'No Matching Frames Found' : 'No Search Results'}
           </h3>
           <p className="empty-results-desc">
             {activeQuery
-              ? `No frames matched query "${activeQuery}". Try examples: "red shirt", "white shoes", "car", "phone", "bag", "human".`
-              : 'Try search queries like: "red shirt", "white shoes", "phone", "camera", "car", "bag", "human", "black backpack", or "red shirt with white shoes".'}
+              ? `No frames matched "${activeQuery}". Try another search term.`
+              : 'Enter a search term above (e.g., "red shirt", "car", "white shoes") to view matching frame cards.'}
           </p>
         </div>
       )}
