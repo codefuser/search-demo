@@ -53,7 +53,7 @@ export default function App() {
       if (response.ok && data.status === 'success') {
         setUploadStatus({
           type: 'success',
-          message: `Uploaded successfully! Saved at: ${data.saved_path} (${(data.size_bytes / (1024 * 1024)).toFixed(2)} MB)`,
+          message: `Uploaded & extracted ${data.total_extracted_frames} frames @ ${data.fps} FPS into ${data.frames_dir}!`,
         });
       } else {
         setUploadStatus({
@@ -105,7 +105,7 @@ export default function App() {
       </section>
 
       <footer className="footer">
-        Semantic Video Search Application &bull; Prototype Local Video Upload
+        Semantic Video Search Application &bull; Frame Extraction Prototype
       </footer>
     </div>
   );
