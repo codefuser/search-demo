@@ -3,16 +3,23 @@ import { Header } from './components/Header';
 import { VideoUploader } from './components/VideoUploader';
 import { VideoPreview } from './components/VideoPreview';
 import { SearchBar } from './components/SearchBar';
-import { ResultsSection } from './components/ResultsSection';
+import { ResultsSection, SearchResult } from './components/ResultsSection';
 
 export default function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [currentVideoId, setCurrentVideoId] = useState<string | null>(null);
+
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadStatus, setUploadStatus] = useState<{
     type: 'idle' | 'success' | 'error';
     message: string;
   }>({ type: 'idle', message: '' });
+
+  const [isSearching, setIsSearching] = useState<boolean>(false);
+  const [activeQuery, setActiveQuery] = useState<string>('');
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [seekTimestamp, setSeekTimestamp] = useState<number | null>(null);
 
   const handleVideoSelect = (file: File) => {
     if (videoUrl) {
@@ -21,6 +28,10 @@ export default function App() {
     setSelectedFile(file);
     const url = URL.createObjectURL(file);
     setVideoUrl(url);
+    setCurrentVideoId(null);
+    setSearchResults([]);
+    setActiveQuery('');
+    setSeekTimestamp(null);
     setUploadStatus({ type: 'idle', message: '' });
   };
 
@@ -30,6 +41,10 @@ export default function App() {
     }
     setSelectedFile(null);
     setVideoUrl(null);
+    setCurrentVideoId(null);
+    setSearchResults([]);
+    setActiveQuery('');
+    setSeekTimestamp(null);
     setUploadStatus({ type: 'idle', message: '' });
   };
 
@@ -51,9 +66,10 @@ export default function App() {
       const data = await response.json();
 
       if (response.ok && data.status === 'success') {
+        setCurrentVideoId(data.video_id);
         setUploadStatus({
           type: 'success',
-          message: `Uploaded & extracted ${data.total_extracted_frames} frames @ ${data.fps} FPS into ${data.frames_dir}!`,
+          message: `Indexed ${data.indexed_embeddings_count} frame embeddings @ ${data.fps} FPS into ${data.frames_dir}!`,
         });
       } else {
         setUploadStatus({
@@ -70,6 +86,46 @@ export default function App() {
     } finally {
       setIsUploading(false);
     }
+  };
+
+  const handleSearch = async (queryText: string) => {
+    if (!queryText.trim()) return;
+
+    setIsSearching(true);
+    setActiveQuery(queryText);
+
+    try {
+      const response = await fetch('http://127.0.0.1:8000/search', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: queryText,
+          video_id: currentVideoId || undefined,
+          top_k: 6,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.status === 'success') {
+        setSearchResults(data.results || []);
+      } else {
+        setSearchResults([]);
+        alert(`Search error: ${data.detail || 'Failed to perform semantic search'}`);
+      }
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : 'Search request failed';
+      setSearchResults([]);
+      alert(`Search failed: ${errorMsg}. Ensure FastAPI backend is running.`);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleSelectTimestamp = (timestamp: number) => {
+    setSeekTimestamp(timestamp);
   };
 
   useEffect(() => {
@@ -95,17 +151,27 @@ export default function App() {
         <VideoPreview
           videoUrl={videoUrl}
           videoFile={selectedFile}
+          seekTimestamp={seekTimestamp}
           onClearVideo={handleClearVideo}
         />
       </main>
 
       <section style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-        <SearchBar />
-        <ResultsSection />
+        <SearchBar
+          onSearch={handleSearch}
+          isSearching={isSearching}
+          activeQuery={activeQuery}
+        />
+        <ResultsSection
+          results={searchResults}
+          activeQuery={activeQuery}
+          onSelectTimestamp={handleSelectTimestamp}
+          isSearching={isSearching}
+        />
       </section>
 
       <footer className="footer">
-        Semantic Video Search Application &bull; Frame Extraction Prototype
+        Semantic Video Search Application &bull; OpenCLIP Pretrained Local Embeddings
       </footer>
     </div>
   );

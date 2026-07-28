@@ -2,14 +2,17 @@ import os
 import shutil
 import uuid
 import cv2
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from clip_service import clip_service
 
 app = FastAPI(
     title="Semantic Video Search API",
-    description="Prototype FastAPI backend for local semantic video search and frame extraction",
-    version="0.2.0"
+    description="OpenCLIP-Powered Local Semantic Video Search API",
+    version="0.3.0"
 )
 
 # Enable CORS for frontend client interactions
@@ -35,6 +38,12 @@ app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi"}
 
 
+class SearchRequest(BaseModel):
+    query: str
+    video_id: str | None = None
+    top_k: int = 6
+
+
 def extract_frames_every_second(video_path: str, frames_dir: str):
     """
     Extracts 1 frame every second from the video using OpenCV.
@@ -46,8 +55,8 @@ def extract_frames_every_second(video_path: str, frames_dir: str):
         raise ValueError("Unable to open video file with OpenCV")
 
     fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps <= 0 or not fps or fps != fps:  # Check invalid or NaN
-        fps = 30.0  # Default fallback FPS
+    if fps <= 0 or not fps or fps != fps:
+        fps = 30.0
 
     frame_interval = max(1, int(round(fps)))
     
@@ -78,10 +87,9 @@ def extract_frames_every_second(video_path: str, frames_dir: str):
 
 @app.get("/")
 def read_root():
-    """Root endpoint delivering basic API information."""
     return {
-        "message": "Semantic Video Search API is online",
-        "version": "0.2.0",
+        "message": "OpenCLIP Semantic Video Search API is online",
+        "version": "0.3.0",
         "status": "ready",
         "health_endpoint": "/health"
     }
@@ -89,19 +97,21 @@ def read_root():
 
 @app.get("/health")
 def health_check():
-    """Health check endpoint to verify backend server status."""
     return {
         "status": "ok",
         "service": "semantic-video-search-backend",
-        "version": "0.2.0"
+        "clip_model": "OpenCLIP ViT-B-32",
+        "version": "0.3.0"
     }
 
 
 @app.post("/upload")
 async def upload_video(file: UploadFile = File(...)):
     """
-    Receive uploaded video, validate format (.mp4, .mov, .avi),
-    save inside uploads/{video_id}/ and extract 1 frame every second into uploads/{video_id}/frames/
+    1. Receive local video file (.mp4, .mov, .avi)
+    2. Save in uploads/{video_id}/
+    3. Extract 1 frame per second into uploads/{video_id}/frames/
+    4. Generate & store OpenCLIP embeddings into uploads/{video_id}/embeddings.npy
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
@@ -113,7 +123,7 @@ async def upload_video(file: UploadFile = File(...)):
             detail=f"Unsupported format '{file_ext}'. Allowed formats: {', '.join(ALLOWED_EXTENSIONS)}"
         )
 
-    # Generate unique video ID folder
+    # Unique video folder
     video_id = str(uuid.uuid4())[:8]
     video_dir = os.path.join(UPLOAD_DIR, video_id)
     frames_dir = os.path.join(video_dir, "frames")
@@ -129,12 +139,15 @@ async def upload_video(file: UploadFile = File(...)):
 
         file_size = os.path.getsize(video_path)
 
-        # Extract 1 frame per second using OpenCV
+        # Step 1: Extract 1 frame per second using OpenCV
         total_frames, fps, timestamps = extract_frames_every_second(video_path, frames_dir)
+
+        # Step 2: Generate & save OpenCLIP vector embeddings locally
+        total_embeddings = clip_service.extract_and_save_embeddings(video_dir, frames_dir, timestamps)
 
         return {
             "status": "success",
-            "message": "Video uploaded and frames extracted successfully",
+            "message": "Video uploaded, frames extracted, and OpenCLIP embeddings indexed successfully",
             "video_id": video_id,
             "filename": safe_filename,
             "saved_path": f"uploads/{video_id}/{safe_filename}",
@@ -142,14 +155,54 @@ async def upload_video(file: UploadFile = File(...)):
             "size_bytes": file_size,
             "fps": fps,
             "total_extracted_frames": total_frames,
+            "indexed_embeddings_count": total_embeddings,
             "timestamps": timestamps
         }
 
     except Exception as e:
-        # Clean up directory if extraction failed
         if os.path.exists(video_dir):
             shutil.rmtree(video_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=f"Failed to process video: {str(e)}")
+
+
+@app.post("/search")
+async def search_video(req: SearchRequest):
+    """
+    Search extracted video frames using natural language text query via OpenCLIP embeddings.
+    """
+    if not req.query or not req.query.strip():
+        raise HTTPException(status_code=400, detail="Search query cannot be empty")
+
+    try:
+        results = clip_service.search(
+            upload_base_dir=UPLOAD_DIR,
+            query_text=req.query,
+            video_id=req.video_id,
+            top_k=req.top_k
+        )
+
+        return {
+            "status": "success",
+            "query": req.query,
+            "video_id": req.video_id,
+            "total_results": len(results),
+            "results": results
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Search execution failed: {str(e)}")
+
+
+@app.get("/search")
+async def search_video_get(
+    query: str = Query(..., description="Text query to search inside video"),
+    video_id: str | None = Query(None, description="Optional specific video_id"),
+    top_k: int = Query(6, description="Number of top matching frames to return")
+):
+    """
+    GET version of semantic video search endpoint.
+    """
+    req = SearchRequest(query=query, video_id=video_id, top_k=top_k)
+    return await search_video(req)
 
 
 if __name__ == "__main__":

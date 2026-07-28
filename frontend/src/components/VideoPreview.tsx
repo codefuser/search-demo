@@ -1,14 +1,31 @@
-import React, { useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { PlayCircle, Trash2, Video as VideoIcon, Clock, HardDrive, FileVideo } from 'lucide-react';
 
 interface VideoPreviewProps {
   videoUrl: string | null;
   videoFile: File | null;
+  seekTimestamp: number | null;
   onClearVideo: () => void;
 }
 
-export const VideoPreview: React.FC<VideoPreviewProps> = ({ videoUrl, videoFile, onClearVideo }) => {
+export const VideoPreview: React.FC<VideoPreviewProps> = ({
+  videoUrl,
+  videoFile,
+  seekTimestamp,
+  onClearVideo,
+}) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
   const [durationSec, setDurationSec] = useState<number | null>(null);
+
+  // Jump to timestamp when seekTimestamp prop changes
+  useEffect(() => {
+    if (videoRef.current && seekTimestamp !== null && !isNaN(seekTimestamp)) {
+      videoRef.current.currentTime = seekTimestamp;
+      videoRef.current.play().catch(() => {
+        // Auto-play might be blocked by browser policy without user gesture
+      });
+    }
+  }, [seekTimestamp]);
 
   const handleLoadedMetadata = (e: React.SyntheticEvent<HTMLVideoElement, Event>) => {
     const videoElem = e.currentTarget;
@@ -43,7 +60,7 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({ videoUrl, videoFile,
       <div className="card-header">
         <div className="card-title">
           <PlayCircle size={18} />
-          <span>Video Preview & Details</span>
+          <span>Video Preview & Player</span>
         </div>
         {videoFile && (
           <button
@@ -63,6 +80,7 @@ export const VideoPreview: React.FC<VideoPreviewProps> = ({ videoUrl, videoFile,
       <div className="preview-container">
         {videoUrl ? (
           <video
+            ref={videoRef}
             controls
             src={videoUrl}
             className="preview-video"
