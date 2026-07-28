@@ -10,6 +10,7 @@ export interface SearchResult {
   frame_index: number;
   filename: string;
   video_id: string;
+  caption?: string;
 }
 
 interface ResultsSectionProps {
@@ -32,11 +33,11 @@ export const ResultsSection: React.FC<ResultsSectionProps> = ({
       <div className="card-header">
         <div className="card-title">
           <Layers size={18} />
-          <span>Top Matches (Up to 20 Results)</span>
+          <span>Top Matches (Above Threshold)</span>
         </div>
         {results.length > 0 && !isSearching && (
           <span style={{ fontSize: '0.8125rem', color: '#94a3b8' }}>
-            Displaying Top {results.length} frame matches for &quot;{activeQuery}&quot; (Highest score first)
+            Displaying Top {results.length} frame matches for &quot;{activeQuery}&quot; (Threshold &ge; 0.25)
           </span>
         )}
       </div>
@@ -46,9 +47,9 @@ export const ResultsSection: React.FC<ResultsSectionProps> = ({
           <div className="empty-results-icon" style={{ borderColor: 'var(--primary)', color: 'var(--primary)' }}>
             <Loader2 size={32} className="animate-spin" />
           </div>
-          <h3 className="empty-results-title">Computing OpenCLIP Similarities...</h3>
+          <h3 className="empty-results-title">Computing Similarities & Vision Captions...</h3>
           <p className="empty-results-desc">
-            Matching text vector embedding against local frame embeddings in memory.
+            Matching text vector embedding against local frame embeddings & reranking with AI captions.
           </p>
         </div>
       ) : results.length > 0 ? (
@@ -207,6 +208,29 @@ export const ResultsSection: React.FC<ResultsSectionProps> = ({
                       Score: {item.similarity_score}
                     </div>
                   </div>
+
+                  {/* AI Frame Caption */}
+                  {item.caption && (
+                    <div
+                      style={{
+                        fontSize: '0.75rem',
+                        color: '#94a3b8',
+                        background: 'rgba(15, 23, 42, 0.6)',
+                        padding: '0.35rem 0.5rem',
+                        borderRadius: '6px',
+                        border: '1px solid rgba(255, 255, 255, 0.05)',
+                        lineHeight: 1.35,
+                        display: '-webkit-box',
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: 'vertical',
+                        overflow: 'hidden'
+                      }}
+                      title={item.caption}
+                    >
+                      <strong style={{ color: '#818cf8', fontWeight: 600 }}>Caption: </strong>
+                      {item.caption}
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -222,8 +246,8 @@ export const ResultsSection: React.FC<ResultsSectionProps> = ({
           </h3>
           <p className="empty-results-desc">
             {activeQuery
-              ? `No frames matched "${activeQuery}". Try examples: "red shirt", "white shoes", "car", "phone", "bag", "human".`
-              : 'Enter a search term above (e.g., "red shirt", "white shoes", "car", "phone") to display Top 20 frame matches.'}
+              ? `No frames matched "${activeQuery}" above threshold (≥ 0.25). Try natural language examples: "person wearing red shirt", "man with black cap", "person holding a phone", "woman carrying a black handbag", "person wearing white shoes".`
+              : 'Enter a natural language search query above (e.g., "person wearing red shirt", "man with black cap") to display matching frames.'}
           </p>
         </div>
       )}

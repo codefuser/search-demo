@@ -67,6 +67,7 @@ class SearchRequest(BaseModel):
     query: str
     video_id: str | None = None
     top_k: int = 20
+    similarity_threshold: float = 0.25
 
 
 def extract_frames_every_second(video_path: str, frames_dir: str):
@@ -235,16 +236,17 @@ async def search_video(req: SearchRequest):
         raise HTTPException(status_code=400, detail="Search query cannot be empty")
 
     try:
-        # Wrap CPU/matrix computation in asyncio.to_thread with 10.0s timeout protection
+        # Wrap CPU/matrix computation in asyncio.to_thread with 15.0s timeout protection
         results = await asyncio.wait_for(
             asyncio.to_thread(
                 clip_service.search,
                 UPLOAD_DIR,
                 req.query,
                 req.video_id,
-                req.top_k
+                req.top_k,
+                req.similarity_threshold
             ),
-            timeout=10.0
+            timeout=15.0
         )
 
         return {
@@ -252,11 +254,12 @@ async def search_video(req: SearchRequest):
             "query": req.query,
             "video_id": req.video_id,
             "total_results": len(results),
+            "similarity_threshold": req.similarity_threshold,
             "results": results
         }
     except asyncio.TimeoutError:
-        print(f"[SEARCH TIMEOUT ERROR] Query '{req.query}' timed out after 10.0 seconds!")
-        raise HTTPException(status_code=504, detail="Search request timed out after 10 seconds.")
+        print(f"[SEARCH TIMEOUT ERROR] Query '{req.query}' timed out after 15.0 seconds!")
+        raise HTTPException(status_code=504, detail="Search request timed out after 15 seconds.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search execution failed: {str(e)}")
 
@@ -265,10 +268,12 @@ async def search_video(req: SearchRequest):
 async def search_video_get(
     query: str = Query(..., description="Text query to search inside video"),
     video_id: str | None = Query(None, description="Optional specific video_id"),
-    top_k: int = Query(20, description="Number of top matching frames to return (default 20)")
+    top_k: int = Query(20, description="Number of top matching frames to return (default 20)"),
+    similarity_threshold: float = Query(0.25, description="Minimum cosine similarity threshold (default 0.25)")
 ):
-    req = SearchRequest(query=query, video_id=video_id, top_k=top_k)
+    req = SearchRequest(query=query, video_id=video_id, top_k=top_k, similarity_threshold=similarity_threshold)
     return await search_video(req)
+
 
 
 if __name__ == "__main__":

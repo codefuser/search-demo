@@ -69,7 +69,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
             type="text"
             className="search-input"
             style={{ opacity: 1, cursor: 'text', paddingRight: '2.5rem' }}
-            placeholder="Type query and press Enter (e.g., 'red shirt', 'white shoes', 'car', 'human')..."
+            placeholder="Type query and press Enter (e.g., 'man with black cap', 'person wearing red shirt')..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -113,6 +113,30 @@ export const SearchBar: React.FC<SearchBarProps> = ({
           )}
         </button>
       </form>
+
+      {/* Suggested Natural Language Query Chips & Recent History */}
+      <div className="history-wrap">
+        <span style={{ fontSize: '0.75rem', color: '#64748b', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+          <Sparkles size={12} style={{ color: '#818cf8' }} /> Examples:
+        </span>
+        {[
+          'person wearing red shirt',
+          'man with black cap',
+          'person holding a phone',
+          'woman carrying a black handbag',
+          'person wearing white shoes'
+        ].map((term) => (
+          <button
+            key={term}
+            type="button"
+            className="history-chip"
+            style={{ background: 'rgba(99, 102, 241, 0.1)', color: '#a5b4fc', border: '1px solid rgba(99, 102, 241, 0.25)' }}
+            onClick={() => handleChipClick(term)}
+          >
+            {term}
+          </button>
+        ))}
+      </div>
 
       {/* Search History Chips */}
       {searchHistory.length > 0 && (
