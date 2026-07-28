@@ -2,14 +2,14 @@ import React from 'react';
 import { Layers, SearchX, Clock, Zap, Play } from 'lucide-react';
 
 export interface SearchResult {
-  video_id: string;
-  frame_index: number;
-  filename: string;
-  frame_url: string;
+  similarity_score: number;
+  similarity_percent: number;
   timestamp: number;
   formatted_timestamp: string;
-  raw_score: number;
-  similarity_percent: number;
+  frame_image: string;
+  frame_index: number;
+  filename: string;
+  video_id: string;
 }
 
 interface ResultsSectionProps {
@@ -30,11 +30,11 @@ export const ResultsSection: React.FC<ResultsSectionProps> = ({
       <div className="card-header">
         <div className="card-title">
           <Layers size={18} />
-          <span>Semantic Search Results</span>
+          <span>Semantic Search Results (Sorted by Similarity Score)</span>
         </div>
         {results.length > 0 && (
           <span style={{ fontSize: '0.8125rem', color: '#94a3b8' }}>
-            Found {results.length} matching frame clips for &quot;{activeQuery}&quot;
+            Found {results.length} frame matches for &quot;{activeQuery}&quot;
           </span>
         )}
       </div>
@@ -74,7 +74,7 @@ export const ResultsSection: React.FC<ResultsSectionProps> = ({
                 }}
               >
                 <img
-                  src={item.frame_url}
+                  src={item.frame_image}
                   alt={`Frame ${item.frame_index}`}
                   style={{
                     width: '100%',
@@ -82,7 +82,6 @@ export const ResultsSection: React.FC<ResultsSectionProps> = ({
                     objectFit: 'cover'
                   }}
                   onError={(e) => {
-                    // Fallback placeholder if image load fails
                     (e.currentTarget as HTMLImageElement).src =
                       'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100%" height="100%" fill="%231e293b"/></svg>';
                   }}
@@ -141,7 +140,7 @@ export const ResultsSection: React.FC<ResultsSectionProps> = ({
               </div>
 
               <div style={{ padding: '0.875rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyWait: 'space-between', justifyContent: 'space-between' }}>
                   <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
                     Frame #{item.frame_index}
                   </span>
@@ -160,12 +159,12 @@ export const ResultsSection: React.FC<ResultsSectionProps> = ({
                     }}
                   >
                     <Zap size={12} />
-                    {item.similarity_percent}% Match
+                    Score: {item.similarity_score} ({item.similarity_percent}%)
                   </div>
                 </div>
 
                 <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
-                  Click card to play at {item.formatted_timestamp}
+                  Timestamp: {item.timestamp}s &bull; Click to play
                 </div>
               </div>
             </div>
@@ -181,8 +180,8 @@ export const ResultsSection: React.FC<ResultsSectionProps> = ({
           </h3>
           <p className="empty-results-desc">
             {activeQuery
-              ? `No frames closely matched "${activeQuery}". Try another descriptive phrase.`
-              : 'Upload a video and type any natural language phrase (e.g. "a person running", "a car turning") to search frames.'}
+              ? `No frames matched query "${activeQuery}". Try examples: "red shirt", "white shoes", "car", "phone", "bag", "human".`
+              : 'Try search queries like: "red shirt", "white shoes", "phone", "camera", "car", "bag", "human", "black backpack", or "red shirt with white shoes".'}
           </p>
         </div>
       )}

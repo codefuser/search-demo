@@ -32,8 +32,8 @@ class CLIPSearchService:
 
     def extract_and_save_embeddings(self, video_dir: str, frames_dir: str, timestamps: list):
         """
-        Generates vector embeddings for every frame in frames_dir,
-        saves embeddings.npy and metadata.json in video_dir.
+        Generates vector embeddings for every frame in frames_dir using OpenCLIP,
+        saves embeddings.npy and metadata.json in video_dir without using any database.
         """
         self.load_model()
 
@@ -51,7 +51,7 @@ class CLIPSearchService:
                 image_tensors.append(processed_img)
 
                 filename = os.path.basename(frame_path)
-                timestamp_val = timestamps[idx] if idx < len(timestamps) else idx * 1.0
+                timestamp_val = timestamps[idx] if idx < len(timestamps) else float(idx)
 
                 metadata.append({
                     "frame_index": idx + 1,
@@ -69,12 +69,12 @@ class CLIPSearchService:
 
         with torch.no_grad():
             image_features = self.model.encode_image(batch_tensor)
-            # L2 Normalize embeddings
+            # L2 Normalize frame embeddings
             image_features /= image_features.norm(dim=-1, keepdim=True)
 
         embeddings_np = image_features.cpu().numpy()
 
-        # Save embeddings and metadata
+        # Save local numpy embeddings & JSON metadata (No Database)
         embeddings_path = os.path.join(video_dir, "embeddings.npy")
         metadata_path = os.path.join(video_dir, "metadata.json")
 
@@ -82,20 +82,21 @@ class CLIPSearchService:
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
 
-        print(f"[OpenCLIP] Successfully generated {len(embeddings_np)} embeddings -> {embeddings_path}")
+        print(f"[OpenCLIP] Successfully generated {len(embeddings_np)} frame embeddings -> {embeddings_path}")
         return len(embeddings_np)
 
-    def search(self, upload_base_dir: str, query_text: str, video_id: str = None, top_k: int = 6):
+    def search(self, upload_base_dir: str, query_text: str, video_id: str = None, top_k: int = 10):
         """
-        Encodes query_text into OpenCLIP text embedding, computes cosine similarity
-        against saved frame embeddings, and returns ranked top_k search results.
+        Generates text embedding for user query (e.g. 'red shirt', 'white shoes', 'car', etc.),
+        compares against local embeddings.npy files using cosine similarity,
+        and returns top matches sorted by similarity score (highest match first).
         """
         self.load_model()
 
         if not query_text or not query_text.strip():
             return []
 
-        # Encode text query
+        # 1. Generate text embedding for user query
         text_tokens = self.tokenizer([query_text.strip()]).to(self.device)
         with torch.no_grad():
             text_features = self.model.encode_text(text_tokens)
@@ -103,7 +104,7 @@ class CLIPSearchService:
 
         text_embed_np = text_features.cpu().numpy().squeeze(0)
 
-        # Collect candidate video directories
+        # 2. Collect local video directories containing embeddings.npy
         video_dirs = []
         if video_id and os.path.exists(os.path.join(upload_base_dir, video_id)):
             video_dirs = [os.path.join(upload_base_dir, video_id)]
@@ -115,6 +116,7 @@ class CLIPSearchService:
 
         all_results = []
 
+        # 3. Compare text embedding against stored frame embeddings
         for v_dir in video_dirs:
             curr_video_id = os.path.basename(v_dir)
             embeddings_path = os.path.join(v_dir, "embeddings.npy")
@@ -128,33 +130,33 @@ class CLIPSearchService:
                 with open(metadata_path, "r", encoding="utf-8") as f:
                     metadata = json.load(f)
 
-                # Compute cosine similarities (dot product of normalized vectors)
+                # Compute cosine similarity scores (dot product of L2 normalized vectors)
                 similarities = np.dot(embeddings, text_embed_np)
 
                 for idx, sim in enumerate(similarities):
                     meta = metadata[idx] if idx < len(metadata) else {}
                     filename = meta.get("filename", f"frame_{(idx+1):04d}.jpg")
-                    timestamp = meta.get("timestamp", idx * 1.0)
+                    timestamp = meta.get("timestamp", float(idx))
                     
-                    # Convert similarity score (typically 0.15 - 0.40 range in CLIP) into user-friendly percentage
                     score_val = float(sim)
                     percentage = round(max(0.0, min(100.0, ((score_val + 1.0) / 2.0) * 100)), 1)
+                    frame_image_url = f"http://127.0.0.1:8000/uploads/{curr_video_id}/frames/{filename}"
 
                     all_results.append({
-                        "video_id": curr_video_id,
-                        "frame_index": meta.get("frame_index", idx + 1),
-                        "filename": filename,
-                        "frame_url": f"http://127.0.0.1:8000/uploads/{curr_video_id}/frames/{filename}",
+                        "similarity_score": round(score_val, 4),
+                        "similarity_percent": percentage,
                         "timestamp": timestamp,
                         "formatted_timestamp": self._format_timestamp(timestamp),
-                        "raw_score": round(score_val, 4),
-                        "similarity_percent": percentage
+                        "frame_image": frame_image_url,
+                        "frame_index": meta.get("frame_index", idx + 1),
+                        "filename": filename,
+                        "video_id": curr_video_id
                     })
             except Exception as e:
                 print(f"[OpenCLIP Search Error] Failed to search in {v_dir}: {e}")
 
-        # Sort all results by raw similarity score descending
-        all_results.sort(key=lambda x: x["raw_score"], reverse=True)
+        # 4. Sort results by similarity score descending (Highest match first)
+        all_results.sort(key=lambda x: x["similarity_score"], reverse=True)
 
         return all_results[:top_k]
 
@@ -168,5 +170,5 @@ class CLIPSearchService:
             return f"{hrs:02d}:{mins:02d}:{secs:02d}"
         return f"{mins:02d}:{secs:02d}"
 
-# Global service instance
+# Singleton service instance
 clip_service = CLIPSearchService()
