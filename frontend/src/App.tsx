@@ -52,7 +52,10 @@ export default function App() {
     if (!selectedFile) return;
 
     setIsUploading(true);
-    setUploadStatus({ type: 'idle', message: '' });
+    setUploadStatus({
+      type: 'idle',
+      message: 'Extracting frames & indexing OpenCLIP vector embeddings...',
+    });
 
     const formData = new FormData();
     formData.append('file', selectedFile);
@@ -67,9 +70,10 @@ export default function App() {
 
       if (response.ok && data.status === 'success') {
         setCurrentVideoId(data.video_id);
+        const cacheTag = data.is_cached ? '⚡ Loaded instantly from RAM cache' : 'Indexed & cached';
         setUploadStatus({
           type: 'success',
-          message: `Indexed ${data.indexed_embeddings_count} frame embeddings @ ${data.fps} FPS into ${data.frames_dir}!`,
+          message: `Indexing complete (${cacheTag}): ${data.indexed_embeddings_count} frame vectors ready for fast search!`,
         });
       } else {
         setUploadStatus({
@@ -112,7 +116,6 @@ export default function App() {
       if (response.ok && data.status === 'success') {
         setSearchResults(data.results || []);
         if (data.results && data.results.length > 0) {
-          // Default select the top matching result (highest match)
           setSeekTimestamp(data.results[0].timestamp);
         }
       } else {
@@ -176,7 +179,7 @@ export default function App() {
       </section>
 
       <footer className="footer">
-        Semantic Video Search Application &bull; Minimal Result Cards & Playback Seeking
+        Semantic Video Search Application &bull; Cached In-Memory Vector Search
       </footer>
     </div>
   );
