@@ -1,11 +1,12 @@
 import React, { useRef, useState } from 'react';
-import { UploadCloud, Film, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
+import { UploadCloud, Film, CheckCircle, AlertTriangle, Loader2, RefreshCw } from 'lucide-react';
 
 interface VideoUploaderProps {
   onVideoSelect: (file: File) => void;
   selectedFile: File | null;
   onUploadToBackend: () => void;
   isUploading: boolean;
+  indexingProgress: number;
   uploadStatus: {
     type: 'idle' | 'success' | 'error';
     message: string;
@@ -17,6 +18,7 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
   selectedFile,
   onUploadToBackend,
   isUploading,
+  indexingProgress,
   uploadStatus,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -36,22 +38,27 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
     if (isValid) {
       onVideoSelect(file);
     } else {
-      alert('Invalid file format. Please select an MP4, MOV, or AVI video file.');
+      alert(`Invalid format "${file.name}". Please select a valid video file (.mp4, .mov, .avi).`);
     }
   };
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsDragging(true);
   };
 
-  const handleDragLeave = () => {
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
     setIsDragging(false);
   };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsDragging(false);
+
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       validateAndSelect(e.dataTransfer.files[0]);
     }
@@ -87,10 +94,10 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
         </div>
         <div>
           <p className="dropzone-title">
-            {selectedFile ? selectedFile.name : 'Select or Drag & Drop Video'}
+            {selectedFile ? selectedFile.name : 'Drag & Drop Local Video Here'}
           </p>
           <p className="dropzone-desc">
-            Supported Formats: <strong>.mp4, .mov, .avi</strong>
+            Supports <strong>.mp4, .mov, .avi</strong> video formats
           </p>
         </div>
 
@@ -98,13 +105,14 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
           <button
             type="button"
             className="btn-upload"
+            disabled={isUploading}
             onClick={(e) => {
               e.stopPropagation();
               fileInputRef.current?.click();
             }}
           >
             <UploadCloud size={16} />
-            {selectedFile ? 'Change Video' : 'Browse Local Video'}
+            {selectedFile ? 'Change File' : 'Browse Files'}
           </button>
 
           {selectedFile && (
@@ -121,12 +129,12 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
               {isUploading ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
-                  Uploading...
+                  Indexing ({indexingProgress}%)
                 </>
               ) : (
                 <>
                   <UploadCloud size={16} />
-                  Upload to FastAPI
+                  Upload & Extract Index
                 </>
               )}
             </button>
@@ -134,6 +142,20 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
         </div>
       </div>
 
+      {/* Progress Bar while Indexing */}
+      {isUploading && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: '#94a3b8' }}>
+            <span>Extracting frames & indexing OpenCLIP vectors...</span>
+            <span style={{ fontWeight: 600, color: '#6366f1' }}>{indexingProgress}%</span>
+          </div>
+          <div className="progress-bar-wrap">
+            <div className="progress-bar-fill" style={{ width: `${indexingProgress}%` }}></div>
+          </div>
+        </div>
+      )}
+
+      {/* Status & Error Handling Banner */}
       {uploadStatus.type !== 'idle' && (
         <div
           className={`status-banner ${uploadStatus.type}`}
@@ -143,14 +165,37 @@ export const VideoUploader: React.FC<VideoUploaderProps> = ({
             fontSize: '0.85rem',
             display: 'flex',
             alignItems: 'center',
+            justifyContent: 'space-between',
             gap: '0.5rem',
             background: uploadStatus.type === 'success' ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
             color: uploadStatus.type === 'success' ? '#34d399' : '#f87171',
             border: `1px solid ${uploadStatus.type === 'success' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`
           }}
         >
-          {uploadStatus.type === 'success' ? <CheckCircle size={16} /> : <AlertCircle size={16} />}
-          <span>{uploadStatus.message}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            {uploadStatus.type === 'success' ? <CheckCircle size={16} /> : <AlertTriangle size={16} />}
+            <span>{uploadStatus.message}</span>
+          </div>
+
+          {uploadStatus.type === 'error' && (
+            <button
+              type="button"
+              onClick={onUploadToBackend}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#f87171',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.25rem',
+                fontSize: '0.75rem',
+                fontWeight: 600
+              }}
+            >
+              <RefreshCw size={12} /> Retry
+            </button>
+          )}
         </div>
       )}
     </div>

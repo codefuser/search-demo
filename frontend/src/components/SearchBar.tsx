@@ -1,13 +1,21 @@
 import React, { useState } from 'react';
-import { Search, Loader2, X, Sparkles } from 'lucide-react';
+import { Search, Loader2, X, Sparkles, History, Trash2 } from 'lucide-react';
 
 interface SearchBarProps {
-  onSearch: (query: str) => void;
+  onSearch: (query: string) => void;
   isSearching: boolean;
   activeQuery: string;
+  searchHistory: string[];
+  onClearHistory: () => void;
 }
 
-export const SearchBar: React.FC<SearchBarProps> = ({ onSearch, isSearching, activeQuery }) => {
+export const SearchBar: React.FC<SearchBarProps> = ({
+  onSearch,
+  isSearching,
+  activeQuery,
+  searchHistory,
+  onClearHistory,
+}) => {
   const [query, setQuery] = useState(activeQuery);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -17,8 +25,20 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSearch, isSearching, act
     }
   };
 
-  const handleClear = () => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && query.trim()) {
+      e.preventDefault();
+      onSearch(query.trim());
+    }
+  };
+
+  const handleClearInput = () => {
     setQuery('');
+  };
+
+  const handleChipClick = (term: string) => {
+    setQuery(term);
+    onSearch(term);
   };
 
   return (
@@ -26,8 +46,20 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSearch, isSearching, act
       <div className="card-header">
         <div className="card-title">
           <Sparkles size={18} style={{ color: '#818cf8' }} />
-          <span>Semantic OpenCLIP Video Search</span>
+          <span>Semantic OpenCLIP Search</span>
         </div>
+        {searchHistory.length > 0 && (
+          <button
+            type="button"
+            onClick={onClearHistory}
+            className="btn-icon-danger"
+            title="Clear Search History"
+            style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.75rem' }}
+          >
+            <Trash2 size={13} />
+            <span>Clear History</span>
+          </button>
+        )}
       </div>
 
       <form onSubmit={handleSubmit} className="search-box-wrapper" style={{ display: 'flex', gap: '0.75rem' }}>
@@ -37,16 +69,17 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSearch, isSearching, act
             type="text"
             className="search-input"
             style={{ opacity: 1, cursor: 'text', paddingRight: '2.5rem' }}
-            placeholder="Type anything (e.g., 'a red car turning left', 'a person walking in rain')..."
+            placeholder="Type query and press Enter (e.g., 'red shirt', 'white shoes', 'car', 'human')..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={handleKeyDown}
             disabled={isSearching}
             aria-label="Semantic Search Query"
           />
           {query && (
             <button
               type="button"
-              onClick={handleClear}
+              onClick={handleClearInput}
               style={{
                 position: 'absolute',
                 right: '1rem',
@@ -80,6 +113,25 @@ export const SearchBar: React.FC<SearchBarProps> = ({ onSearch, isSearching, act
           )}
         </button>
       </form>
+
+      {/* Search History Chips */}
+      {searchHistory.length > 0 && (
+        <div className="history-wrap">
+          <span style={{ fontSize: '0.75rem', color: '#64748b', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+            <History size={12} /> Recent:
+          </span>
+          {searchHistory.map((term, index) => (
+            <button
+              key={`${term}-${index}`}
+              type="button"
+              className="history-chip"
+              onClick={() => handleChipClick(term)}
+            >
+              {term}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

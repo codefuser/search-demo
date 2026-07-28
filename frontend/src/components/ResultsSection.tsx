@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers, SearchX, Clock, Zap, Play, CheckCircle2 } from 'lucide-react';
+import { Layers, SearchX, Clock, Zap, Play, CheckCircle2, Loader2 } from 'lucide-react';
 
 export interface SearchResult {
   similarity_score: number;
@@ -32,16 +32,26 @@ export const ResultsSection: React.FC<ResultsSectionProps> = ({
       <div className="card-header">
         <div className="card-title">
           <Layers size={18} />
-          <span>Search Results</span>
+          <span>Top Matches (Up to 20 Results)</span>
         </div>
-        {results.length > 0 && (
+        {results.length > 0 && !isSearching && (
           <span style={{ fontSize: '0.8125rem', color: '#94a3b8' }}>
-            {results.length} frame matches for &quot;{activeQuery}&quot; (Highest match first)
+            Displaying Top {results.length} frame matches for &quot;{activeQuery}&quot; (Highest score first)
           </span>
         )}
       </div>
 
-      {results.length > 0 ? (
+      {isSearching ? (
+        <div className="empty-results">
+          <div className="empty-results-icon" style={{ borderColor: 'var(--primary)', color: 'var(--primary)' }}>
+            <Loader2 size={32} className="animate-spin" />
+          </div>
+          <h3 className="empty-results-title">Computing OpenCLIP Similarities...</h3>
+          <p className="empty-results-desc">
+            Matching text vector embedding against local frame embeddings in memory.
+          </p>
+        </div>
+      ) : results.length > 0 ? (
         <div
           style={{
             display: 'grid',
@@ -174,13 +184,11 @@ export const ResultsSection: React.FC<ResultsSectionProps> = ({
                 {/* Card Info */}
                 <div style={{ padding: '0.875rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    {/* Timestamp Details */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8125rem', fontWeight: 500, color: '#f8fafc' }}>
                       <Clock size={13} style={{ color: '#38bdf8' }} />
                       <span>{item.formatted_timestamp} ({item.timestamp}s)</span>
                     </div>
 
-                    {/* Similarity Score */}
                     <div
                       style={{
                         display: 'inline-flex',
@@ -210,12 +218,12 @@ export const ResultsSection: React.FC<ResultsSectionProps> = ({
             <SearchX size={28} />
           </div>
           <h3 className="empty-results-title">
-            {isSearching ? 'Searching Video Frames...' : activeQuery ? 'No Matching Frames Found' : 'No Search Results'}
+            {activeQuery ? 'No Matching Frames Found' : 'No Search Results'}
           </h3>
           <p className="empty-results-desc">
             {activeQuery
-              ? `No frames matched "${activeQuery}". Try another search term.`
-              : 'Enter a search term above (e.g., "red shirt", "car", "white shoes") to view matching frame cards.'}
+              ? `No frames matched "${activeQuery}". Try examples: "red shirt", "white shoes", "car", "phone", "bag", "human".`
+              : 'Enter a search term above (e.g., "red shirt", "white shoes", "car", "phone") to display Top 20 frame matches.'}
           </p>
         </div>
       )}
