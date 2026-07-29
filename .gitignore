@@ -18,10 +18,6 @@ build/
 *.log
 .env
 
-# Reports directory (ignored for GitHub)
-report/
-reports/
-
 # Uploaded videos, extracted frame images & embeddings (ignored for GitHub)
 backend/uploads/*
 !backend/uploads/.gitkeep
