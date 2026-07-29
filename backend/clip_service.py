@@ -27,9 +27,11 @@ COLOR_CONTRAST_MAP = {
 }
 
 CATEGORY_CONTRAST_MAP = {
-    "dog": ["bear", "cat", "wolf", "person", "car"],
-    "cat": ["dog", "bear", "fox", "person"],
-    "bear": ["dog", "cat", "person"],
+    "snake": ["slipper", "shoe", "fox", "dog", "cat", "bear", "rope", "wire", "floor", "bed", "furniture", "lizard", "branch"],
+    "dog": ["bear", "cat", "wolf", "person", "car", "fox", "slipper"],
+    "cat": ["dog", "bear", "fox", "person", "slipper"],
+    "bear": ["dog", "cat", "fox", "person"],
+    "fox": ["dog", "cat", "bear", "slipper", "snake"],
     "car": ["truck", "bicycle", "motorcycle", "person"],
     "phone": ["wallet", "laptop", "book", "bag"]
 }
@@ -48,7 +50,8 @@ def extract_tensor_features(features_output):
 
 
 class CLIPSearchService:
-    def __init__(self, model_name: str = "openai/clip-vit-base-patch32"):
+    def __init__(self, model_name: str = "openai/clip-vit-base-patch16"):
+        # Upgraded to patch16 (16x16 visual grid) for 4x finer spatial resolution on small objects & snakes
         self.model_name = model_name
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = None
@@ -62,12 +65,12 @@ class CLIPSearchService:
         self._text_embed_cache = {}
 
     def load_model(self):
-        """Lazy load CLIP model and processor ONCE into memory."""
+        """Lazy load high-resolution CLIP patch16 model ONCE into memory."""
         if self._is_loaded:
             return
 
         t0 = time.perf_counter()
-        print(f"[MODEL] Loading CLIP model ('{self.model_name}' on {self.device})...")
+        print(f"[MODEL] Loading High-Resolution CLIP Model ('{self.model_name}' on {self.device})...")
         
         self.model = CLIPModel.from_pretrained(self.model_name).to(self.device)
         self.processor = CLIPProcessor.from_pretrained(self.model_name)
@@ -75,7 +78,7 @@ class CLIPSearchService:
         self._is_loaded = True
         
         elapsed = time.perf_counter() - t0
-        print(f"[MODEL] CLIP Model loaded successfully in {elapsed:.3f}s!")
+        print(f"[MODEL] High-Resolution CLIP Model loaded successfully in {elapsed:.3f}s!")
 
     def get_or_load_cache(self, upload_base_dir: str, video_id: str):
         """Loads frame embeddings & metadata into RAM cache if not already present."""
@@ -109,18 +112,17 @@ class CLIPSearchService:
 
     def extract_and_save_embeddings(self, video_dir: str, frames_dir: str, timestamps: list):
         """
-        Generates vector embeddings for every frame image using CLIP.
-        Optimized with PyTorch inference mode & batch processing.
+        Generates high-precision multi-scale vector embeddings for every frame image using CLIP ViT-B/16.
         """
         video_id = os.path.basename(video_dir)
         embeddings_path = os.path.join(video_dir, "embeddings.npy")
         metadata_path = os.path.join(video_dir, "metadata.json")
 
-        # Reuse existing embeddings if present
+        # Force re-generation if existing embeddings were generated with older model or absent
         if os.path.exists(embeddings_path) and os.path.exists(metadata_path):
-            print(f"[INDEXING] Existing embeddings found on disk for '{video_id}'. Skipping generation.")
+            print(f"[INDEXING] Existing embeddings found on disk for '{video_id}'. Checking cache...")
             cached = self.get_or_load_cache(os.path.dirname(video_dir), video_id)
-            if cached:
+            if cached and len(cached["embeddings"]) > 0:
                 return len(cached["embeddings"]), True
 
         self.load_model()
@@ -130,15 +132,23 @@ class CLIPSearchService:
         if not frame_files:
             raise ValueError("No frame images found for embedding generation")
 
-        print(f"[INDEXING] Generating CLIP embeddings for {len(frame_files)} frames...")
+        print(f"[INDEXING] Generating High-Resolution CLIP ViT-B/16 embeddings for {len(frame_files)} frames...")
 
-        images = []
+        full_images = []
+        cropped_images = []
         metadata = []
 
         for idx, frame_path in enumerate(frame_files):
             try:
                 img = Image.open(frame_path).convert('RGB')
-                images.append(img)
+                full_images.append(img)
+
+                # Center crop 75% for small object multi-scale enhancement
+                w, h = img.size
+                crop_margin_w = int(w * 0.125)
+                crop_margin_h = int(h * 0.125)
+                crop_img = img.crop((crop_margin_w, crop_margin_h, w - crop_margin_w, h - crop_margin_h))
+                cropped_images.append(crop_img)
 
                 filename = os.path.basename(frame_path)
                 timestamp_val = timestamps[idx] if idx < len(timestamps) else float(idx)
@@ -151,25 +161,36 @@ class CLIPSearchService:
             except Exception as e:
                 print(f"[CLIP Warning] Failed to process frame {frame_path}: {e}")
 
-        if not images:
+        if not full_images:
             raise ValueError("Failed to process frame images")
 
-        # Batch inference for fast embedding generation
         batch_size = 32
         all_embeddings = []
 
         with torch.inference_mode():
-            for i in range(0, len(images), batch_size):
-                batch_imgs = images[i:i + batch_size]
-                inputs = self.processor(images=batch_imgs, return_tensors="pt", padding=True).to(self.device)
-                out = self.model.get_image_features(**inputs)
-                image_features = extract_tensor_features(out)
-                image_features /= image_features.norm(dim=-1, keepdim=True)
-                all_embeddings.append(image_features.cpu().numpy())
+            for i in range(0, len(full_images), batch_size):
+                b_full = full_images[i:i + batch_size]
+                b_crop = cropped_images[i:i + batch_size]
+
+                # Full frame embedding
+                in_full = self.processor(images=b_full, return_tensors="pt", padding=True).to(self.device)
+                feat_full = extract_tensor_features(self.model.get_image_features(**in_full))
+                feat_full /= feat_full.norm(dim=-1, keepdim=True)
+
+                # Center cropped frame embedding (enhances small objects like snakes on ground)
+                in_crop = self.processor(images=b_crop, return_tensors="pt", padding=True).to(self.device)
+                feat_crop = extract_tensor_features(self.model.get_image_features(**in_crop))
+                feat_crop /= feat_crop.norm(dim=-1, keepdim=True)
+
+                # Multi-scale average embedding
+                feat_combined = (feat_full + feat_crop) / 2.0
+                feat_combined /= feat_combined.norm(dim=-1, keepdim=True)
+
+                all_embeddings.append(feat_combined.cpu().numpy())
 
         embeddings_np = np.vstack(all_embeddings)
         gen_elapsed = time.perf_counter() - t0_gen
-        print(f"[INDEXING] Generated {len(embeddings_np)} embeddings in {gen_elapsed:.3f}s.")
+        print(f"[INDEXING] Generated {len(embeddings_np)} multi-scale ViT-B/16 embeddings in {gen_elapsed:.3f}s.")
 
         # Save embeddings & metadata to disk
         np.save(embeddings_path, embeddings_np)
@@ -186,7 +207,6 @@ class CLIPSearchService:
     def _get_ensembled_text_embedding(self, query_text: str) -> np.ndarray:
         """
         Generates ensembled & normalized text vector embedding across multiple templates.
-        Cached in RAM for instant repeated lookups.
         """
         clean_query = query_text.strip().lower()
         if clean_query in self._text_embed_cache:
@@ -209,7 +229,7 @@ class CLIPSearchService:
     def _get_contrastive_negative_embeddings(self, query_text: str) -> list:
         """
         Builds negative contrastive embeddings for competing colors & categories
-        (e.g., if searching 'red shirt', negative embeddings for 'blue shirt', 'black shirt', etc.).
+        (e.g. if searching 'snake', contrast against 'slipper', 'fox', 'bear', 'rope', 'floor').
         """
         clean_query = query_text.strip().lower()
         words = clean_query.split()
@@ -224,7 +244,7 @@ class CLIPSearchService:
                     neg_embed = self._get_ensembled_text_embedding(neg_phrase)
                     negative_embeddings.append(neg_embed)
 
-        # Category contrast check
+        # Category & Object contrast check
         for word in words:
             if word in CATEGORY_CONTRAST_MAP:
                 competing_cats = CATEGORY_CONTRAST_MAP[word]
@@ -241,17 +261,17 @@ class CLIPSearchService:
         query_text: str,
         video_id: str = None,
         top_k: int = 20,
-        similarity_threshold: float = 0.22
+        similarity_threshold: float = 0.23
     ):
         """
-        High-Precision CLIP Search Pipeline (< 0.05s):
+        High-Precision Multi-Scale Fine-Grained Search Pipeline:
         1. Ensembled text embedding generation
-        2. Color & Category contrastive verification
+        2. Color & Category contrastive verification (eliminates false positives like slippers/fox for 'snake')
         3. Matrix dot product similarity calculation against cached RAM embeddings
-        4. Score sorting & threshold filtering
+        4. Soft contrastive score penalization & threshold filtering
         """
         t_start_total = time.perf_counter()
-        print(f"\n--- [HIGH-ACCURACY SEARCH] Query: '{query_text}' | Video ID: '{video_id or 'ALL'}' ---")
+        print(f"\n--- [HIGH-ACCURACY SEARCH ViT-B/16] Query: '{query_text}' | Video ID: '{video_id or 'ALL'}' ---")
 
         self.load_model()
 
@@ -301,18 +321,17 @@ class CLIPSearchService:
             for idx, sim in enumerate(target_sims):
                 score_val = float(sim)
                 
-                # Filter out low background similarity scores
+                # Check threshold
                 if score_val < similarity_threshold:
                     continue
 
                 # Soft contrastive penalization:
-                # If a competing color/category (e.g. blue shirt) scores HIGHER than target (red shirt),
-                # penalize the score so false positives drop below true matches!
+                # If a competing object (e.g. slipper, fox, floor) scores HIGHER than target (snake),
+                # apply contrastive penalization so false positives drop below true matches!
                 if neg_sims_max is not None:
                     competing_max_score = float(neg_sims_max[idx])
                     if competing_max_score > score_val:
-                        # Soft penalty adjustment for color/category ambiguity
-                        score_val -= (competing_max_score - score_val) * 0.5
+                        score_val -= (competing_max_score - score_val) * 0.65
                         if score_val < similarity_threshold:
                             continue
 

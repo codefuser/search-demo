@@ -19,15 +19,15 @@ from clip_service import clip_service
 async def lifespan(app: FastAPI):
     """
     FastAPI Lifespan context manager:
-    Pre-loads the CLIP model into memory ONCE during server startup.
-    This guarantees that model loading NEVER blocks or hangs user search requests!
+    Pre-loads the CLIP ViT-B/16 high-resolution model into memory ONCE during server startup.
+    Guarantees zero-lag search queries!
     """
     print("=================================================================")
-    print("[SERVER STARTUP] Pre-loading CLIP model into memory...")
+    print("[SERVER STARTUP] Pre-loading High-Resolution CLIP ViT-B/16 model...")
     t0 = time.perf_counter()
     clip_service.load_model()
     elapsed = time.perf_counter() - t0
-    print(f"[SERVER STARTUP] CLIP model successfully loaded in {elapsed:.3f}s!")
+    print(f"[SERVER STARTUP] CLIP ViT-B/16 model successfully loaded in {elapsed:.3f}s!")
     print("=================================================================\n")
     yield
     print("[SERVER SHUTDOWN] Shutting down backend server...")
@@ -35,8 +35,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Semantic Video Search API",
-    description="High-performance cached CLIP local semantic video search API",
-    version="0.6.0",
+    description="High-resolution fine-grained CLIP local semantic video search API",
+    version="0.7.0",
     lifespan=lifespan
 )
 
@@ -67,7 +67,7 @@ class SearchRequest(BaseModel):
     query: str
     video_id: str | None = None
     top_k: int = 20
-    similarity_threshold: float = 0.25
+    similarity_threshold: float = 0.23
 
 
 def extract_frames_every_second(video_path: str, frames_dir: str):
@@ -79,7 +79,7 @@ def extract_frames_every_second(video_path: str, frames_dir: str):
     existing_frames = sorted(glob.glob(os.path.join(frames_dir, "frame_*.jpg")))
     
     if len(existing_frames) > 0:
-        print(f"[INDEXING STEP 1/5] Extracting Frames: Found {len(existing_frames)} existing frames. Skipping extraction (0.00s).")
+        print(f"[INDEXING STEP 1/2] Extracting Frames: Found {len(existing_frames)} existing frames. Skipping extraction (0.00s).")
         
         metadata_path = os.path.join(os.path.dirname(frames_dir), "metadata.json")
         timestamps = []
@@ -93,7 +93,7 @@ def extract_frames_every_second(video_path: str, frames_dir: str):
 
         return len(existing_frames), 30.0, timestamps, True
 
-    print(f"[INDEXING STEP 1/5] Extracting Frames: Starting OpenCV 1fps extraction from '{video_path}'...")
+    print(f"[INDEXING STEP 1/2] Extracting Frames: Starting OpenCV 1fps extraction from '{video_path}'...")
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError("Unable to open video file with OpenCV")
@@ -126,8 +126,7 @@ def extract_frames_every_second(video_path: str, frames_dir: str):
 
     cap.release()
     ext_elapsed = time.perf_counter() - t0_ext
-    print(f"[INDEXING STEP 1/5] Extracting Frames: Successfully extracted {len(timestamps)} frames @ {round(fps,2)} FPS in {ext_elapsed:.3f}s.")
-
+    print(f"[INDEXING STEP 1/2] Extracting Frames: Extracted {len(timestamps)} frames @ {round(fps,2)} FPS in {ext_elapsed:.3f}s.")
 
     return len(timestamps), round(fps, 2), timestamps, False
 
@@ -135,8 +134,8 @@ def extract_frames_every_second(video_path: str, frames_dir: str):
 @app.get("/")
 def read_root():
     return {
-        "message": "CLIP Semantic Video Search API (Pre-loaded Lifespan Edition)",
-        "version": "0.6.0",
+        "message": "High-Resolution CLIP ViT-B/16 Semantic Video Search API",
+        "version": "0.7.0",
         "status": "ready",
         "health_endpoint": "/health"
     }
@@ -147,10 +146,10 @@ def health_check():
     return {
         "status": "ok",
         "service": "semantic-video-search-backend",
-        "clip_model": "CLIP ViT-B-32",
+        "clip_model": "CLIP ViT-B-16 Fine-Grained Multi-Scale",
         "model_preloaded": clip_service._is_loaded,
         "ram_cached_videos_count": len(clip_service._embeddings_cache),
-        "version": "0.6.0"
+        "version": "0.7.0"
     }
 
 
@@ -159,7 +158,7 @@ async def upload_video(file: UploadFile = File(...)):
     """
     1. Validates file
     2. Hashes video signature for instant cache lookup
-    3. Runs frame extraction & embedding generation in worker threadpool (non-blocking)
+    3. Runs frame extraction & multi-scale CLIP ViT-B/16 embedding generation
     """
     t_upload_start = time.perf_counter()
     if not file.filename:
@@ -230,14 +229,12 @@ async def upload_video(file: UploadFile = File(...)):
 @app.post("/search")
 async def search_video(req: SearchRequest):
     """
-    Search extracted video frames using natural language text query.
-    Executes search in worker thread with timeout protection (10s timeout).
+    Search extracted video frames using natural language text query via fine-grained CLIP ViT-B/16.
     """
     if not req.query or not req.query.strip():
         raise HTTPException(status_code=400, detail="Search query cannot be empty")
 
     try:
-        # Wrap CPU/matrix computation in asyncio.to_thread with 15.0s timeout protection
         results = await asyncio.wait_for(
             asyncio.to_thread(
                 clip_service.search,
@@ -270,11 +267,10 @@ async def search_video_get(
     query: str = Query(..., description="Text query to search inside video"),
     video_id: str | None = Query(None, description="Optional specific video_id"),
     top_k: int = Query(20, description="Number of top matching frames to return (default 20)"),
-    similarity_threshold: float = Query(0.25, description="Minimum cosine similarity threshold (default 0.25)")
+    similarity_threshold: float = Query(0.23, description="Minimum cosine similarity threshold (default 0.23)")
 ):
     req = SearchRequest(query=query, video_id=video_id, top_k=top_k, similarity_threshold=similarity_threshold)
     return await search_video(req)
-
 
 
 if __name__ == "__main__":
