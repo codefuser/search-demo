@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, Loader2, X, Sparkles, History, Trash2 } from 'lucide-react';
+import { Search, Loader2, X, Sparkles, History, Trash2, Tag } from 'lucide-react';
 
 interface SearchBarProps {
   onSearch: (query: string) => void;
@@ -8,6 +8,14 @@ interface SearchBarProps {
   searchHistory: string[];
   onClearHistory: () => void;
 }
+
+const EXAMPLE_SUGGESTIONS = [
+  'person wearing red shirt',
+  'man with black cap',
+  'person holding a phone',
+  'woman carrying a black handbag',
+  'person wearing white shoes'
+];
 
 export const SearchBar: React.FC<SearchBarProps> = ({
   onSearch,
@@ -46,7 +54,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
       <div className="card-header">
         <div className="card-title">
           <Sparkles size={18} style={{ color: '#818cf8' }} />
-          <span>Semantic OpenCLIP Search</span>
+          <span>High-Accuracy CLIP Semantic Search</span>
         </div>
         {searchHistory.length > 0 && (
           <button
@@ -69,7 +77,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
             type="text"
             className="search-input"
             style={{ opacity: 1, cursor: 'text', paddingRight: '2.5rem' }}
-            placeholder="Type query and press Enter (e.g., 'man with black cap', 'person wearing red shirt')..."
+            placeholder="Type descriptive query (e.g., 'person wearing red shirt', 'black dog', 'phone')..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -114,24 +122,26 @@ export const SearchBar: React.FC<SearchBarProps> = ({
         </button>
       </form>
 
-      {/* Suggested Natural Language Query Chips & Recent History */}
-      <div className="history-wrap">
+      {/* Suggested Search Examples */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap', marginTop: '0.25rem' }}>
         <span style={{ fontSize: '0.75rem', color: '#64748b', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-          <Sparkles size={12} style={{ color: '#818cf8' }} /> Examples:
+          <Tag size={12} /> Examples:
         </span>
-        {[
-          'person wearing red shirt',
-          'man with black cap',
-          'person holding a phone',
-          'woman carrying a black handbag',
-          'person wearing white shoes'
-        ].map((term) => (
+        {EXAMPLE_SUGGESTIONS.map((term, i) => (
           <button
-            key={term}
+            key={`sugg-${i}`}
             type="button"
-            className="history-chip"
-            style={{ background: 'rgba(99, 102, 241, 0.1)', color: '#a5b4fc', border: '1px solid rgba(99, 102, 241, 0.25)' }}
             onClick={() => handleChipClick(term)}
+            style={{
+              padding: '0.2rem 0.55rem',
+              borderRadius: '6px',
+              fontSize: '0.75rem',
+              background: 'rgba(99, 102, 241, 0.08)',
+              border: '1px solid rgba(99, 102, 241, 0.2)',
+              color: '#a5b4fc',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease'
+            }}
           >
             {term}
           </button>

@@ -79,7 +79,7 @@ def extract_frames_every_second(video_path: str, frames_dir: str):
     existing_frames = sorted(glob.glob(os.path.join(frames_dir, "frame_*.jpg")))
     
     if len(existing_frames) > 0:
-        print(f"[STAGE 2 - Frame Extraction] Found {len(existing_frames)} existing frames. Skipping extraction (0.00s).")
+        print(f"[INDEXING STEP 1/5] Extracting Frames: Found {len(existing_frames)} existing frames. Skipping extraction (0.00s).")
         
         metadata_path = os.path.join(os.path.dirname(frames_dir), "metadata.json")
         timestamps = []
@@ -93,7 +93,7 @@ def extract_frames_every_second(video_path: str, frames_dir: str):
 
         return len(existing_frames), 30.0, timestamps, True
 
-    print(f"[STAGE 2 - Frame Extraction] Starting OpenCV extraction from '{video_path}'...")
+    print(f"[INDEXING STEP 1/5] Extracting Frames: Starting OpenCV 1fps extraction from '{video_path}'...")
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError("Unable to open video file with OpenCV")
@@ -126,7 +126,8 @@ def extract_frames_every_second(video_path: str, frames_dir: str):
 
     cap.release()
     ext_elapsed = time.perf_counter() - t0_ext
-    print(f"[STAGE 2 - Frame Extraction] Extracted {len(timestamps)} frames @ {round(fps,2)} FPS in {ext_elapsed:.3f}s.")
+    print(f"[INDEXING STEP 1/5] Extracting Frames: Successfully extracted {len(timestamps)} frames @ {round(fps,2)} FPS in {ext_elapsed:.3f}s.")
+
 
     return len(timestamps), round(fps, 2), timestamps, False
 

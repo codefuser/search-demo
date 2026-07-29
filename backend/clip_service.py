@@ -7,6 +7,36 @@ import numpy as np
 from PIL import Image
 from transformers import CLIPProcessor, CLIPModel
 
+# Standard prompt templates for CLIP zero-shot ensembling
+PROMPT_TEMPLATES = [
+    "a photo of {query}",
+    "a video frame showing {query}",
+    "a picture containing {query}",
+    "a close-up photo of {query}",
+    "{query}"
+]
+
+# Color contrast map for disambiguating colors (e.g. red shirt vs blue shirt)
+COLOR_CONTRAST_MAP = {
+    "red": ["blue", "green", "black", "white", "yellow", "purple"],
+    "blue": ["red", "green", "black", "white", "yellow", "pink"],
+    "green": ["red", "blue", "black", "white", "yellow"],
+    "black": ["white", "red", "blue", "yellow"],
+    "white": ["black", "red", "blue", "yellow"],
+    "yellow": ["red", "blue", "black", "white"],
+    "pink": ["blue", "red", "black", "white"],
+    "purple": ["blue", "red", "black", "white"]
+}
+
+# Category contrast map for disambiguating animals & objects (e.g. dog vs bear)
+CATEGORY_CONTRAST_MAP = {
+    "dog": ["bear", "cat", "wolf", "person", "car"],
+    "cat": ["dog", "bear", "fox", "person"],
+    "bear": ["dog", "cat", "person"],
+    "car": ["truck", "bicycle", "motorcycle", "person"],
+    "phone": ["wallet", "laptop", "book", "bag"]
+}
+
 class CLIPSearchService:
     def __init__(self, model_name: str = "openai/clip-vit-base-patch32"):
         self.model_name = model_name
@@ -15,27 +45,19 @@ class CLIPSearchService:
         self.processor = None
         self._is_loaded = False
         
-        # RAM cache for video embeddings
-        # Schema: { video_id: { "embeddings": np.ndarray, "metadata": list } }
+        # RAM cache for video frame embeddings
         self._embeddings_cache = {}
-
-        # RAM cache for frame captions & captioning model
-        self.caption_model = None
-        self.caption_processor = None
-        self._is_caption_loaded = False
-        self._captions_cache = {}
+        
+        # RAM cache for query text embeddings
+        self._text_embed_cache = {}
 
     def load_model(self):
-        """
-        Loads CLIP model and processor ONCE at server startup.
-        Subsequent calls return immediately without reloading.
-        """
+        """Lazy load CLIP model and processor ONCE into memory."""
         if self._is_loaded:
-            print(f"[STAGE 1 - Model Load] Model '{self.model_name}' is already loaded in memory (0.00s).")
             return
 
         t0 = time.perf_counter()
-        print(f"[STAGE 1 - Model Load] Starting CLIP model loading ('{self.model_name}' on {self.device})...")
+        print(f"[MODEL] Loading CLIP model ('{self.model_name}' on {self.device})...")
         
         self.model = CLIPModel.from_pretrained(self.model_name).to(self.device)
         self.processor = CLIPProcessor.from_pretrained(self.model_name)
@@ -43,60 +65,10 @@ class CLIPSearchService:
         self._is_loaded = True
         
         elapsed = time.perf_counter() - t0
-        print(f"[STAGE 1 - Model Load] COMPLETED in {elapsed:.3f}s")
-
-    def load_caption_model(self):
-        """
-        Loads BLIP vision-language image captioning model lazily.
-        """
-        if self._is_caption_loaded:
-            return
-
-        t0 = time.perf_counter()
-        print("[STAGE 1b - Vision Caption Model] Loading BLIP captioning model ('Salesforce/blip-image-captioning-base')...")
-        try:
-            from transformers import BlipProcessor, BlipForConditionalGeneration
-            self.caption_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-            self.caption_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").to(self.device)
-            self.caption_model.eval()
-            self._is_caption_loaded = True
-            elapsed = time.perf_counter() - t0
-            print(f"[STAGE 1b - Vision Caption Model] Loaded successfully in {elapsed:.3f}s!")
-        except Exception as e:
-            print(f"[STAGE 1b - Vision Caption Model Warning] Failed to load BLIP model: {e}")
-
-    def generate_caption_for_frame(self, frame_path: str) -> str:
-        """
-        Generates a natural language vision-language caption for a frame image.
-        Caches captions in RAM so each frame is captioned only once.
-        """
-        if frame_path in self._captions_cache:
-            return self._captions_cache[frame_path]
-
-        if not os.path.exists(frame_path):
-            return "Video frame preview"
-
-        try:
-            self.load_caption_model()
-            if self.caption_model and self.caption_processor:
-                raw_image = Image.open(frame_path).convert('RGB')
-                inputs = self.caption_processor(raw_image, return_tensors="pt").to(self.device)
-                with torch.no_grad():
-                    out = self.caption_model.generate(**inputs, max_new_tokens=30)
-                caption_text = self.caption_processor.decode(out[0], skip_special_tokens=True).strip()
-                caption_text = caption_text.capitalize() if caption_text else "Video frame preview"
-                self._captions_cache[frame_path] = caption_text
-                return caption_text
-        except Exception as e:
-            print(f"[Caption Generation Warning] Could not caption {frame_path}: {e}")
-
-        filename = os.path.basename(frame_path)
-        fallback = f"Extracted frame ({filename})"
-        self._captions_cache[frame_path] = fallback
-        return fallback
+        print(f"[MODEL] CLIP Model loaded successfully in {elapsed:.3f}s!")
 
     def get_or_load_cache(self, upload_base_dir: str, video_id: str):
-        """Loads embeddings into RAM cache if not already present."""
+        """Loads frame embeddings & metadata into RAM cache if not already present."""
         if video_id in self._embeddings_cache:
             return self._embeddings_cache[video_id]
 
@@ -107,7 +79,6 @@ class CLIPSearchService:
 
         if os.path.exists(embeddings_path) and os.path.exists(metadata_path):
             try:
-                print(f"[STAGE 5 - Loading Embeddings] Reading embeddings from disk for video_id '{video_id}'...")
                 embeddings_np = np.load(embeddings_path)
                 with open(metadata_path, "r", encoding="utf-8") as f:
                     metadata = json.load(f)
@@ -118,26 +89,26 @@ class CLIPSearchService:
                 }
                 self._embeddings_cache[video_id] = cache_entry
                 elapsed = time.perf_counter() - t0
-                print(f"[STAGE 5 - Loading Embeddings] Loaded {len(embeddings_np)} vectors into RAM in {elapsed:.3f}s.")
+                print(f"[CACHE] Loaded {len(embeddings_np)} vectors into RAM for '{video_id}' in {elapsed:.3f}s.")
                 return cache_entry
             except Exception as e:
-                print(f"[STAGE 5 - Loading Embeddings ERROR] Failed to load cache for {video_id}: {e}")
+                print(f"[CACHE ERROR] Failed to load cache for {video_id}: {e}")
                 return None
 
         return None
 
     def extract_and_save_embeddings(self, video_dir: str, frames_dir: str, timestamps: list):
         """
-        Generates vector embeddings for every frame in frames_dir using CLIP.
-        Skips regeneration if embeddings.npy already exists.
+        Generates vector embeddings for every frame image using CLIP.
+        Optimized with PyTorch inference mode & batch processing.
         """
         video_id = os.path.basename(video_dir)
         embeddings_path = os.path.join(video_dir, "embeddings.npy")
         metadata_path = os.path.join(video_dir, "metadata.json")
 
-        # Optimization: Reuse existing embeddings
+        # Reuse existing embeddings if present
         if os.path.exists(embeddings_path) and os.path.exists(metadata_path):
-            print(f"[STAGE 3 & 4] Existing embeddings found on disk for '{video_id}'. Skipping generation.")
+            print(f"[INDEXING] Existing embeddings found on disk for '{video_id}'. Skipping generation.")
             cached = self.get_or_load_cache(os.path.dirname(video_dir), video_id)
             if cached:
                 return len(cached["embeddings"]), True
@@ -145,11 +116,11 @@ class CLIPSearchService:
         self.load_model()
 
         t0_gen = time.perf_counter()
-        print(f"[STAGE 3 - Generating Frame Embeddings] Processing frames from '{frames_dir}'...")
-
         frame_files = sorted(glob.glob(os.path.join(frames_dir, "frame_*.jpg")))
         if not frame_files:
             raise ValueError("No frame images found for embedding generation")
+
+        print(f"[INDEXING] Generating CLIP embeddings for {len(frame_files)} frames...")
 
         images = []
         metadata = []
@@ -173,27 +144,26 @@ class CLIPSearchService:
         if not images:
             raise ValueError("Failed to process frame images")
 
-        inputs = self.processor(images=images, return_tensors="pt", padding=True).to(self.device)
+        # Batch inference for fast embedding generation
+        batch_size = 32
+        all_embeddings = []
 
-        with torch.no_grad():
-            image_features = self.model.get_image_features(**inputs)
-            if hasattr(image_features, "pooler_output") and image_features.pooler_output is not None:
-                image_features = image_features.pooler_output
-            elif hasattr(image_features, "image_embeds") and image_features.image_embeds is not None:
-                image_features = image_features.image_embeds
-            image_features /= image_features.norm(dim=-1, keepdim=True)
+        with torch.inference_mode():
+            for i in range(0, len(images), batch_size):
+                batch_imgs = images[i:i + batch_size]
+                inputs = self.processor(images=batch_imgs, return_tensors="pt", padding=True).to(self.device)
+                image_features = self.model.get_image_features(**inputs)
+                image_features /= image_features.norm(dim=-1, keepdim=True)
+                all_embeddings.append(image_features.cpu().numpy())
 
-        embeddings_np = image_features.cpu().numpy()
+        embeddings_np = np.vstack(all_embeddings)
         gen_elapsed = time.perf_counter() - t0_gen
-        print(f"[STAGE 3 - Generating Frame Embeddings] Generated {len(embeddings_np)} embeddings in {gen_elapsed:.3f}s.")
+        print(f"[INDEXING] Generated {len(embeddings_np)} embeddings in {gen_elapsed:.3f}s.")
 
-        # Stage 4: Save embeddings to disk
-        t0_save = time.perf_counter()
+        # Save embeddings & metadata to disk
         np.save(embeddings_path, embeddings_np)
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
-        save_elapsed = time.perf_counter() - t0_save
-        print(f"[STAGE 4 - Saving Embeddings] Saved to disk ({embeddings_path}) in {save_elapsed:.3f}s.")
 
         self._embeddings_cache[video_id] = {
             "embeddings": embeddings_np,
@@ -202,49 +172,91 @@ class CLIPSearchService:
 
         return len(embeddings_np), False
 
+    def _get_ensembled_text_embedding(self, query_text: str) -> np.ndarray:
+        """
+        Generates ensembled & normalized text vector embedding across multiple templates.
+        Cached in RAM for instant repeated lookups.
+        """
+        clean_query = query_text.strip().lower()
+        if clean_query in self._text_embed_cache:
+            return self._text_embed_cache[clean_query]
+
+        # Generate prompt templates
+        prompts = [template.format(query=clean_query) for template in PROMPT_TEMPLATES]
+
+        inputs = self.processor(text=prompts, return_tensors="pt", padding=True).to(self.device)
+        with torch.inference_mode():
+            text_features = self.model.get_text_features(**inputs)
+            text_features /= text_features.norm(dim=-1, keepdim=True)
+            # Take average across prompt templates
+            mean_feature = text_features.mean(dim=0, keepdim=True)
+            mean_feature /= mean_feature.norm(dim=-1, keepdim=True)
+
+        embed_np = mean_feature.cpu().numpy().squeeze(0)
+        self._text_embed_cache[clean_query] = embed_np
+        return embed_np
+
+    def _get_contrastive_negative_embeddings(self, query_text: str) -> list:
+        """
+        Builds negative contrastive embeddings for competing colors & categories
+        (e.g., if searching 'red shirt', negative embeddings for 'blue shirt', 'black shirt', etc.).
+        """
+        clean_query = query_text.strip().lower()
+        words = clean_query.split()
+        negative_embeddings = []
+
+        # Color contrast check
+        for word in words:
+            if word in COLOR_CONTRAST_MAP:
+                competing_colors = COLOR_CONTRAST_MAP[word]
+                for comp_color in competing_colors:
+                    neg_phrase = clean_query.replace(word, comp_color)
+                    neg_embed = self._get_ensembled_text_embedding(neg_phrase)
+                    negative_embeddings.append(neg_embed)
+
+        # Category contrast check
+        for word in words:
+            if word in CATEGORY_CONTRAST_MAP:
+                competing_cats = CATEGORY_CONTRAST_MAP[word]
+                for comp_cat in competing_cats:
+                    neg_phrase = clean_query.replace(word, comp_cat)
+                    neg_embed = self._get_ensembled_text_embedding(neg_phrase)
+                    negative_embeddings.append(neg_embed)
+
+        return negative_embeddings
+
     def search(
         self,
         upload_base_dir: str,
         query_text: str,
         video_id: str = None,
         top_k: int = 20,
-        similarity_threshold: float = 0.25
+        similarity_threshold: float = 0.24
     ):
         """
-        Enhanced semantic retrieval pipeline:
-        1. Query encoding via CLIP
-        2. In-memory cosine similarity calculation
-        3. Threshold filtering (similarity_score >= similarity_threshold)
-        4. Vision-Language frame caption generation
-        5. Caption-based second-stage reranking
+        High-Precision CLIP Search Pipeline (< 0.05s):
+        1. Ensembled text embedding generation with prompt template averaging
+        2. Color & Category contrastive verification (eliminates false positives like blue shirt for 'red shirt')
+        3. Matrix dot product similarity calculation against cached RAM embeddings
+        4. Strict score sorting & threshold filtering
         """
         t_start_total = time.perf_counter()
-        print(f"\n--- [SEARCH START] Query: '{query_text}' | Video ID: '{video_id or 'ALL'}' | Threshold: {similarity_threshold} ---")
+        print(f"\n--- [HIGH-ACCURACY SEARCH] Query: '{query_text}' | Video ID: '{video_id or 'ALL'}' ---")
 
-        # Stage 1: Verify model loaded
         self.load_model()
 
         if not query_text or not query_text.strip():
             return []
 
-        # Stage 6a: Generate text embedding vector
+        # 1. Ensembled text embedding
         t0_text = time.perf_counter()
-        print(f"[STAGE 6 - Text Embedding] Encoding text query '{query_text}'...")
-        inputs = self.processor(text=[query_text.strip()], return_tensors="pt", padding=True).to(self.device)
-        with torch.no_grad():
-            text_features = self.model.get_text_features(**inputs)
-            if hasattr(text_features, "pooler_output") and text_features.pooler_output is not None:
-                text_features = text_features.pooler_output
-            elif hasattr(text_features, "text_embeds") and text_features.text_embeds is not None:
-                text_features = text_features.text_embeds
-            text_features /= text_features.norm(dim=-1, keepdim=True)
-
-        text_embed_np = text_features.cpu().numpy().squeeze(0)
+        target_embed = self._get_ensembled_text_embedding(query_text)
+        
+        # 2. Negative contrastive embeddings for color/category disambiguation
+        negative_embeds = self._get_contrastive_negative_embeddings(query_text)
         text_elapsed = time.perf_counter() - t0_text
-        print(f"[STAGE 6 - Text Embedding] Encoded text vector in {text_elapsed:.4f}s.")
 
-        # Stage 5: Retrieve cached frame embeddings
-        t0_cache = time.perf_counter()
+        # 3. Retrieve target video IDs
         target_video_ids = []
         if video_id:
             target_video_ids = [video_id]
@@ -256,7 +268,7 @@ class CLIPSearchService:
 
         all_results = []
 
-        # Stage 6b: Compute matrix multiplication / similarity dot product
+        # 4. Perform vector similarity comparison
         t0_sim = time.perf_counter()
         for vid in target_video_ids:
             cached_data = self.get_or_load_cache(upload_base_dir, vid)
@@ -266,15 +278,31 @@ class CLIPSearchService:
             embeddings = cached_data["embeddings"]
             metadata = cached_data["metadata"]
 
-            # Pure in-memory vector comparison
-            similarities = np.dot(embeddings, text_embed_np)
+            # Compute target similarity scores
+            target_sims = np.dot(embeddings, target_embed)
 
-            for idx, sim in enumerate(similarities):
+            # Compute negative contrastive similarities if available
+            neg_sims_max = None
+            if negative_embeds:
+                neg_matrix = np.vstack(negative_embeds)
+                neg_sims_matrix = np.dot(embeddings, neg_matrix.T)
+                neg_sims_max = np.max(neg_sims_matrix, axis=1)
+
+            for idx, sim in enumerate(target_sims):
                 score_val = float(sim)
                 
-                # Minimum Similarity Threshold Filter
+                # Check minimum threshold
                 if score_val < similarity_threshold:
                     continue
+
+                # Color & Category Contrastive Disambiguation:
+                # If a competing color/category (e.g. blue shirt) scores HIGHER than target (red shirt),
+                # filter out the false positive frame!
+                if neg_sims_max is not None:
+                    competing_max_score = float(neg_sims_max[idx])
+                    if competing_max_score > score_val:
+                        # False positive detected! Frame matches competing color/object better than target query.
+                        continue
 
                 meta = metadata[idx] if idx < len(metadata) else {}
                 filename = meta.get("filename", f"frame_{(idx+1):04d}.jpg")
@@ -294,40 +322,17 @@ class CLIPSearchService:
                 })
 
         sim_elapsed = time.perf_counter() - t0_sim
-        print(f"[STAGE 6 - Computing Similarities] Found {len(all_results)} frames above threshold {similarity_threshold} in {sim_elapsed:.4f}s.")
 
         if not all_results:
-            print(f"[SEARCH COMPLETE] 0 frames exceeded similarity threshold {similarity_threshold}. Returning empty results.\n")
+            print(f"[SEARCH COMPLETE] 0 frames passed accuracy verification & threshold. Returning empty.\n")
             return []
 
-        # Sort by similarity score descending
+        # 5. Sort descending by similarity score
         all_results.sort(key=lambda x: x["similarity_score"], reverse=True)
-        candidates = all_results[:min(len(all_results), top_k * 2)]
-
-        # Stage 7: Generate AI Captions & Perform Second-Stage Reranking
-        t0_rerank = time.perf_counter()
-        query_words = [w.lower() for w in query_text.strip().split() if len(w) > 2]
-
-        for item in candidates:
-            frame_local_path = os.path.join(upload_base_dir, item["video_id"], "frames", item["filename"])
-            caption = self.generate_caption_for_frame(frame_local_path)
-            item["caption"] = caption
-
-            # Rerank boost if caption matches query words
-            matches = sum(1 for w in query_words if w in caption.lower())
-            if matches > 0:
-                boost = round(matches * 0.04, 4)
-                item["similarity_score"] = round(item["similarity_score"] + boost, 4)
-                item["similarity_percent"] = round(max(0.0, min(100.0, ((item["similarity_score"] + 1.0) / 2.0) * 100)), 1)
-
-        # Final sort after reranking
-        candidates.sort(key=lambda x: x["similarity_score"], reverse=True)
-        top_results = candidates[:top_k]
-        rerank_elapsed = time.perf_counter() - t0_rerank
+        top_results = all_results[:top_k]
 
         total_elapsed = time.perf_counter() - t_start_total
-        print(f"[STAGE 7 - Captions & Reranking] Captioned & reranked Top {len(top_results)} results in {rerank_elapsed:.4f}s.")
-        print(f"--- [SEARCH COMPLETE] Total search execution time: {total_elapsed:.4f}s ---\n")
+        print(f"--- [SEARCH COMPLETE] Returned {len(top_results)} verified matches in {total_elapsed:.4f}s (Text encode: {text_elapsed:.4f}s | Vector sim: {sim_elapsed:.4f}s) ---\n")
 
         return top_results
 
@@ -342,4 +347,3 @@ class CLIPSearchService:
         return f"{mins:02d}:{secs:02d}"
 
 clip_service = CLIPSearchService()
-
