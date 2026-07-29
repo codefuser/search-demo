@@ -7,7 +7,6 @@ import numpy as np
 from PIL import Image
 from transformers import CLIPProcessor, CLIPModel
 
-# Standard prompt templates for CLIP zero-shot ensembling
 PROMPT_TEMPLATES = [
     "a photo of {query}",
     "a video frame showing {query}",
@@ -16,7 +15,6 @@ PROMPT_TEMPLATES = [
     "{query}"
 ]
 
-# Color contrast map for disambiguating colors (e.g. red shirt vs blue shirt)
 COLOR_CONTRAST_MAP = {
     "red": ["blue", "green", "black", "white", "yellow", "purple"],
     "blue": ["red", "green", "black", "white", "yellow", "pink"],
@@ -28,7 +26,6 @@ COLOR_CONTRAST_MAP = {
     "purple": ["blue", "red", "black", "white"]
 }
 
-# Category contrast map for disambiguating animals & objects (e.g. dog vs bear)
 CATEGORY_CONTRAST_MAP = {
     "dog": ["bear", "cat", "wolf", "person", "car"],
     "cat": ["dog", "bear", "fox", "person"],
@@ -36,6 +33,19 @@ CATEGORY_CONTRAST_MAP = {
     "car": ["truck", "bicycle", "motorcycle", "person"],
     "phone": ["wallet", "laptop", "book", "bag"]
 }
+
+def extract_tensor_features(features_output):
+    """Safely extracts PyTorch Tensor from HuggingFace output objects."""
+    if isinstance(features_output, torch.Tensor):
+        return features_output
+    if hasattr(features_output, 'text_embeds') and features_output.text_embeds is not None:
+        return features_output.text_embeds
+    if hasattr(features_output, 'image_embeds') and features_output.image_embeds is not None:
+        return features_output.image_embeds
+    if hasattr(features_output, 'pooler_output') and features_output.pooler_output is not None:
+        return features_output.pooler_output
+    return features_output[0]
+
 
 class CLIPSearchService:
     def __init__(self, model_name: str = "openai/clip-vit-base-patch32"):
@@ -152,7 +162,8 @@ class CLIPSearchService:
             for i in range(0, len(images), batch_size):
                 batch_imgs = images[i:i + batch_size]
                 inputs = self.processor(images=batch_imgs, return_tensors="pt", padding=True).to(self.device)
-                image_features = self.model.get_image_features(**inputs)
+                out = self.model.get_image_features(**inputs)
+                image_features = extract_tensor_features(out)
                 image_features /= image_features.norm(dim=-1, keepdim=True)
                 all_embeddings.append(image_features.cpu().numpy())
 
@@ -181,14 +192,13 @@ class CLIPSearchService:
         if clean_query in self._text_embed_cache:
             return self._text_embed_cache[clean_query]
 
-        # Generate prompt templates
         prompts = [template.format(query=clean_query) for template in PROMPT_TEMPLATES]
 
         inputs = self.processor(text=prompts, return_tensors="pt", padding=True).to(self.device)
         with torch.inference_mode():
-            text_features = self.model.get_text_features(**inputs)
+            out = self.model.get_text_features(**inputs)
+            text_features = extract_tensor_features(out)
             text_features /= text_features.norm(dim=-1, keepdim=True)
-            # Take average across prompt templates
             mean_feature = text_features.mean(dim=0, keepdim=True)
             mean_feature /= mean_feature.norm(dim=-1, keepdim=True)
 
@@ -231,14 +241,14 @@ class CLIPSearchService:
         query_text: str,
         video_id: str = None,
         top_k: int = 20,
-        similarity_threshold: float = 0.24
+        similarity_threshold: float = 0.22
     ):
         """
         High-Precision CLIP Search Pipeline (< 0.05s):
-        1. Ensembled text embedding generation with prompt template averaging
-        2. Color & Category contrastive verification (eliminates false positives like blue shirt for 'red shirt')
+        1. Ensembled text embedding generation
+        2. Color & Category contrastive verification
         3. Matrix dot product similarity calculation against cached RAM embeddings
-        4. Strict score sorting & threshold filtering
+        4. Score sorting & threshold filtering
         """
         t_start_total = time.perf_counter()
         print(f"\n--- [HIGH-ACCURACY SEARCH] Query: '{query_text}' | Video ID: '{video_id or 'ALL'}' ---")
@@ -252,7 +262,7 @@ class CLIPSearchService:
         t0_text = time.perf_counter()
         target_embed = self._get_ensembled_text_embedding(query_text)
         
-        # 2. Negative contrastive embeddings for color/category disambiguation
+        # 2. Negative contrastive embeddings
         negative_embeds = self._get_contrastive_negative_embeddings(query_text)
         text_elapsed = time.perf_counter() - t0_text
 
@@ -291,18 +301,20 @@ class CLIPSearchService:
             for idx, sim in enumerate(target_sims):
                 score_val = float(sim)
                 
-                # Check minimum threshold
+                # Filter out low background similarity scores
                 if score_val < similarity_threshold:
                     continue
 
-                # Color & Category Contrastive Disambiguation:
+                # Soft contrastive penalization:
                 # If a competing color/category (e.g. blue shirt) scores HIGHER than target (red shirt),
-                # filter out the false positive frame!
+                # penalize the score so false positives drop below true matches!
                 if neg_sims_max is not None:
                     competing_max_score = float(neg_sims_max[idx])
                     if competing_max_score > score_val:
-                        # False positive detected! Frame matches competing color/object better than target query.
-                        continue
+                        # Soft penalty adjustment for color/category ambiguity
+                        score_val -= (competing_max_score - score_val) * 0.5
+                        if score_val < similarity_threshold:
+                            continue
 
                 meta = metadata[idx] if idx < len(metadata) else {}
                 filename = meta.get("filename", f"frame_{(idx+1):04d}.jpg")
@@ -324,7 +336,7 @@ class CLIPSearchService:
         sim_elapsed = time.perf_counter() - t0_sim
 
         if not all_results:
-            print(f"[SEARCH COMPLETE] 0 frames passed accuracy verification & threshold. Returning empty.\n")
+            print(f"[SEARCH COMPLETE] 0 frames passed accuracy verification. Returning empty.\n")
             return []
 
         # 5. Sort descending by similarity score
